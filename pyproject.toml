@@ -1,0 +1,13 @@
+[project]
+name = "webclient"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "greenlet>=3.5.0",
+    "meshcore>=1.1",
+    "pyserial>=3.5",
+    "sqlalchemy[asyncio]>=2.0.49",
+]

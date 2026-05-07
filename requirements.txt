@@ -1,0 +1,5 @@
+meshcore>=1.1
+pyserial>=3.5
+sqlalchemy[asyncio]>=2.0
+aiosqlite>=0.19
+greenlet>=3.0
