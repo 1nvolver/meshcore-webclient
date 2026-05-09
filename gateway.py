@@ -47,6 +47,8 @@ WATCHDOG_FAIL_THRESHOLD = 3   # X mislukte heartbeats achter elkaar → alarm
 class GatewayState:
     self_pubkey: Optional[str] = None
     self_name: Optional[str] = None
+    # Sentinel-string zodat 'last_scope is None' = bewust geen scope
+    last_scope: object = "__unset__"
 
 
 state = GatewayState()
@@ -96,18 +98,24 @@ def _payload(event):
 # Normalised message envelope + dispatcher
 # ---------------------------------------------------------------------------
 
-class IncomingMessage:
-    """Stabiele shape voor inkomende berichten — onafhankelijk van de
-    exacte meshcore-py event payload. Dispatch-handlers werken hierop."""
+class Message:
+    """Stabiele shape voor zowel inkomende als uitgaande berichten —
+    onafhankelijk van de exacte meshcore-py event payload.
+    Dispatch-handlers werken hierop, dus print/db/web allemaal dezelfde flow."""
 
-    __slots__ = ("kind", "channel_idx", "sender", "text", "raw")
+    __slots__ = ("direction", "kind", "channel_idx", "sender", "text", "raw")
 
-    def __init__(self, kind: str, channel_idx, sender, text, raw):
+    def __init__(self, direction: str, kind: str, channel_idx, sender, text, raw=None):
+        self.direction = direction        # "in" | "out"
         self.kind = kind                  # "dm" | "channel"
         self.channel_idx = channel_idx    # int | None
-        self.sender = sender              # str | None  (pubkey_prefix)
+        self.sender = sender              # str | None  (pubkey_prefix; bij out-channel: 'self')
         self.text = text                  # str
-        self.raw = raw                    # original payload dict
+        self.raw = raw                    # original payload dict (None voor out)
+
+
+# Backward-compat alias voor bestaande imports
+IncomingMessage = Message
 
 
 class Dispatch:
@@ -135,20 +143,22 @@ dispatch = Dispatch()
 
 # Built-in handlers ---------------------------------------------------------
 
-async def print_handler(msg: IncomingMessage) -> None:
+async def print_handler(msg: Message) -> None:
+    arrow = "→" if msg.direction == "out" else " "
     if msg.kind == "channel":
         tag = f"CH{msg.channel_idx if msg.channel_idx is not None else '?'}"
     else:
-        tag = f"DM   {msg.sender or '?'}"
-    sender = f" {msg.sender}" if msg.kind == "channel" and msg.sender else ""
-    sys.stdout.write(f"\r[{tag}{sender}] {msg.text}\n> ")
+        peer = msg.sender if msg.direction == "in" else (msg.sender or "?")
+        tag = f"DM   {peer}"
+    sender_str = f" {msg.sender}" if msg.kind == "channel" and msg.sender and msg.direction == "in" else ""
+    sys.stdout.write(f"\r[{arrow}{tag}{sender_str}] {msg.text}\n> ")
     sys.stdout.flush()
 
 
-async def db_handler(msg: IncomingMessage) -> None:
+async def db_handler(msg: Message) -> None:
     try:
         await db.save_message(
-            direction="in",
+            direction=msg.direction,
             kind=msg.kind,
             text=str(msg.text),
             channel_idx=msg.channel_idx,
@@ -156,7 +166,7 @@ async def db_handler(msg: IncomingMessage) -> None:
             raw=msg.raw,
         )
     except Exception as e:  # noqa: BLE001
-        print(f"\r[!] db save ({msg.kind} in) faalde: {e}\n> ", end="", flush=True)
+        print(f"\r[!] db save ({msg.kind} {msg.direction}) faalde: {e}\n> ", end="", flush=True)
 
 
 # Adapters: vertalen meshcore events naar IncomingMessage en fire'n -------
@@ -164,7 +174,8 @@ async def db_handler(msg: IncomingMessage) -> None:
 async def on_contact_msg(event):
     sender = _extract(event, "pubkey_prefix", "from", "src", default=None)
     text = _extract(event, "text", "msg", "message", default="")
-    msg = IncomingMessage(
+    msg = Message(
+        direction="in",
         kind="dm",
         channel_idx=None,
         sender=str(sender) if sender else None,
@@ -184,7 +195,8 @@ async def on_channel_msg(event):
         idx = chan
     else:
         idx = None
-    msg = IncomingMessage(
+    msg = Message(
+        direction="in",
         kind="channel",
         channel_idx=idx,
         sender=str(sender) if sender and sender != "?" else None,
@@ -233,6 +245,10 @@ Housekeeping:
   /clean older-than <30d|24h|...>  verwijder oude berichten
   /clean all                    verwijder alle berichten
   /vacuum                       compacteer DB-bestand
+
+Web users:
+  /users                        toon alle web-gebruikers
+  /reset-admin                  wis alle admin-accounts (eerste /setup opnieuw)
 
 Algemeen:
   /help                         deze help
@@ -299,6 +315,62 @@ async def send_dm(mc, prefix: str, text: str):
     if not fn:
         raise RuntimeError("Geen send_msg-achtige methode gevonden in meshcore.commands")
     return await fn(prefix, text)
+
+
+async def _apply_channel_scope(mc, channel_idx: int) -> None:
+    """Lees scope uit DB voor het kanaal en pas 'm toe via set_flood_scope.
+    Cache de laatst-gezet scope om onnodige USB-traffic te voorkomen."""
+    try:
+        ch = await db.get_channel(channel_idx)
+    except Exception:  # noqa: BLE001
+        return
+    desired = (ch.scope if ch and ch.scope else None)
+    if getattr(state, "last_scope", "__unset__") == desired:
+        return  # niet veranderd, niets doen
+    fn = getattr(getattr(mc, "commands", None), "set_flood_scope", None)
+    if not callable(fn):
+        return
+    try:
+        await fn(desired)
+        state.last_scope = desired
+    except Exception as e:  # noqa: BLE001
+        print(f"\r[!] set_flood_scope({desired!r}) faalde: {e}\n> ", end="", flush=True)
+
+
+async def send_and_dispatch(mc, *, kind: str, text: str,
+                            channel_idx: Optional[int] = None,
+                            peer: Optional[str] = None) -> bool:
+    """Verstuur via meshcore + fire 'out' Message naar dispatcher.
+
+    Eén centrale plek voor zowel CLI als web. Returnt True bij succes.
+    De dispatcher zorgt dan voor print, DB-save en web-broadcast.
+    """
+    try:
+        if kind == "channel":
+            assert channel_idx is not None
+            await _apply_channel_scope(mc, channel_idx)
+            res = await send_channel(mc, channel_idx, text)
+            sender_label = "self"
+        elif kind == "dm":
+            assert peer is not None
+            res = await send_dm(mc, peer, text)
+            sender_label = peer
+        else:
+            raise ValueError(f"Onbekende kind: {kind}")
+    except Exception as e:  # noqa: BLE001
+        print(f"\r[!] verzenden mislukt: {e}\n> ", end="", flush=True)
+        return False
+
+    msg = Message(
+        direction="out",
+        kind=kind,
+        channel_idx=channel_idx,
+        sender=sender_label,
+        text=text,
+        raw=str(res),
+    )
+    await dispatch.fire(msg)
+    return True
 
 
 DEBUG_EVENTS = os.environ.get("MESHCORE_DEBUG", "").lower() in ("1", "true", "yes")
@@ -864,6 +936,37 @@ async def cmd_vacuum() -> None:
         print(f"[!] vacuum faalde: {e}")
 
 
+async def cmd_list_users() -> None:
+    users = await db.list_users()
+    if not users:
+        print("  (geen users — bij eerste /login wordt /setup doorlopen)")
+        return
+    print(f"  {'naam':<20} {'rol':<8} {'pw':<6} laatste login")
+    print(f"  {'-'*20} {'-'*8} {'-'*6} ----")
+    for u in users:
+        last = u.last_login.astimezone().strftime("%Y-%m-%d %H:%M") if u.last_login else "—"
+        pw = "yes" if u.password_hash else "no"
+        print(f"  {u.username:<20} {u.role:<8} {pw:<6} {last}")
+
+
+async def cmd_reset_admin() -> None:
+    users = await db.list_users()
+    admins = [u for u in users if u.role == "admin"]
+    if not admins:
+        print("  geen admin-accounts om te wissen.")
+        return
+    print("  admins die gewist worden:")
+    for u in admins:
+        print(f"    - {u.username}")
+    if not await confirm("Doorgaan?"):
+        print("Geannuleerd.")
+        return
+    for u in admins:
+        await db.delete_user(u.username)
+    print(f"[ok] {len(admins)} admin-account(s) gewist.")
+    print("    Bij eerstvolgende /login wordt /setup doorlopen.")
+
+
 # ---- Niet-supported settings (eerlijk afmelden) -------------------------
 
 NOT_SUPPORTED_MSG = {
@@ -940,21 +1043,19 @@ async def cli_loop(mc) -> None:
                 print("Gebruik: /c <slot> <tekst>")
                 continue
             text = " ".join(rest[1:])
-            try:
-                res = await send_channel(mc, slot, text)
-                print(f"[→ CH{slot}] {text}   ack/result: {res}")
-                await db.save_message(
-                    direction="out", kind="channel", text=text,
-                    channel_idx=slot, peer="self", raw=str(res),
-                )
-            except Exception as e:  # noqa: BLE001
-                print(f"[!] verzenden mislukt: {e}")
+            await send_and_dispatch(mc, kind="channel", channel_idx=slot, text=text)
             continue
         if head == "/clean":
             await cmd_clean(rest)
             continue
         if head == "/vacuum":
             await cmd_vacuum()
+            continue
+        if head == "/reset-admin":
+            await cmd_reset_admin()
+            continue
+        if head == "/users":
+            await cmd_list_users()
             continue
         if head in NOT_SUPPORTED_MSG:
             print(NOT_SUPPORTED_MSG[head])
@@ -966,14 +1067,7 @@ async def cli_loop(mc) -> None:
                 print("Gebruik: /dm <pubkey_prefix> <bericht>")
                 continue
             prefix, text = parts[1], parts[2]
-            try:
-                res = await send_dm(mc, prefix, text)
-                print(f"[→ DM {prefix}] {text}   ack/result: {res}")
-                await db.save_message(
-                    direction="out", kind="dm", text=text, peer=prefix, raw=str(res),
-                )
-            except Exception as e:  # noqa: BLE001
-                print(f"[!] verzenden mislukt: {e}")
+            await send_and_dispatch(mc, kind="dm", peer=prefix, text=text)
             continue
 
         # Onbekend slash-commando? Dan NIET als bericht versturen.
@@ -982,19 +1076,7 @@ async def cli_loop(mc) -> None:
             continue
 
         # default: public channel
-        try:
-            res = await send_channel(mc, PUBLIC_CHANNEL_IDX, line)
-            print(f"[→ CH{PUBLIC_CHANNEL_IDX}] {line}   ack/result: {res}")
-            await db.save_message(
-                direction="out",
-                kind="channel",
-                text=line,
-                channel_idx=PUBLIC_CHANNEL_IDX,
-                peer="self",
-                raw=str(res),
-            )
-        except Exception as e:  # noqa: BLE001
-            print(f"[!] verzenden mislukt: {e}")
+        await send_and_dispatch(mc, kind="channel", channel_idx=PUBLIC_CHANNEL_IDX, text=line)
 
 
 async def handle_history(line: str) -> None:
@@ -1117,6 +1199,11 @@ async def main() -> int:
     baud = int(os.environ.get("MESHCORE_BAUD", DEFAULT_BAUD))
     db_path = os.environ.get("MESHCORE_DB", "meshcore.db")
 
+    # CLI-flag: --reset-admin → wist alle admin-accounts (ww + user) zodat
+    # /setup opnieuw door de eerste bezoeker doorlopen wordt. Handig als je
+    # je admin-wachtwoord vergeten bent.
+    reset_admin_flag = "--reset-admin" in sys.argv
+
     # DB eerst — als die kapot is, hoeven we niet eens met de radio te praten.
     print(f"[*] db: {db_path}")
     health = await db.init_db(db_path)
@@ -1131,7 +1218,19 @@ async def main() -> int:
     # Seed Public-kanaal als 'r nog geen DB-rij voor bestaat
     existing_channels = await db.list_channels()
     if not any(c.idx == 0 for c in existing_channels):
-        await db.upsert_channel(0, name="Public", is_public=True, has_key=False)
+        await db.upsert_channel(0, name="Public", is_public=True, has_key=False, kind="public")
+
+    # CLI-flag voor admin-reset
+    if reset_admin_flag:
+        users = await db.list_users()
+        admins = [u for u in users if u.role == "admin"]
+        if not admins:
+            print("[*] --reset-admin: geen admin-accounts om te wissen.")
+        else:
+            for u in admins:
+                await db.delete_user(u.username)
+            print(f"[*] --reset-admin: {len(admins)} admin-account(s) gewist.")
+            print("    Bij eerstvolgende /login wordt /setup doorlopen.")
 
     if not port:
         print("ERROR: kon geen MeshCore-device vinden via USB.")
@@ -1184,10 +1283,70 @@ async def main() -> int:
     cli_task = asyncio.create_task(cli_loop(mc))
     stop_task = asyncio.create_task(stop.wait())
     wd_task = asyncio.create_task(watchdog(mc, stop))
+
+    # Webserver — aan tenzij expliciet uitgezet met MESHCORE_WEB=0.
+    web_task: Optional[asyncio.Task] = None
+    if os.environ.get("MESHCORE_WEB", "1") not in ("0", "false", "no"):
+        try:
+            import web as web_mod
+            asgi_app, _ = web_mod.setup_web(
+                mc=mc,
+                send_channel=lambda idx, text: send_and_dispatch(
+                    mc, kind="channel", channel_idx=idx, text=text
+                ),
+                dispatch_obj=dispatch,
+                gateway_state=state,
+                stop_event=stop,
+            )
+            host = os.environ.get("MESHCORE_WEB_HOST", "127.0.0.1")
+            port = int(os.environ.get("MESHCORE_WEB_PORT", "8080"))
+            web_task = asyncio.create_task(web_mod.serve(asgi_app, host, port, stop))
+            n_users = await db.count_users()
+            print(f"[*] web UI op http://{host}:{port}/  ({n_users} user(s) in DB)")
+            if n_users == 0:
+                print("    Eerste keer? Open de URL en maak een admin via /setup.")
+        except Exception as e:  # noqa: BLE001
+            print(f"[!] web UI niet gestart: {e}")
+    else:
+        print("[*] web UI uit (MESHCORE_WEB=0)")
+
+    # Bot — alleen als BOT_CHANNELS gezet is
+    if os.environ.get("BOT_CHANNELS"):
+        try:
+            import bot as bot_mod
+            bot_handler = bot_mod.setup_bot(
+                send_channel=lambda idx, text: send_and_dispatch(
+                    mc, kind="channel", channel_idx=idx, text=text
+                ),
+                send_dm=lambda peer, text: send_and_dispatch(
+                    mc, kind="dm", peer=peer, text=text
+                ),
+                gateway_state=state,
+            )
+            dispatch.register("dm", bot_handler)
+            dispatch.register("channel", bot_handler)
+            print(f"[*] bot actief voor channels: {os.environ['BOT_CHANNELS']}")
+        except Exception as e:  # noqa: BLE001
+            print(f"[!] bot niet gestart: {e}")
+
     await asyncio.wait({cli_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
 
     # Stop alle achtergrondtasks netjes
     stop.set()
+
+    # Web-task: laat 'm zelf afronden via z'n eigen stop-respect.
+    # Cancellen midden in uvicorn's lifespan-shutdown veroorzaakt logspam.
+    if web_task is not None and not web_task.done():
+        try:
+            await asyncio.wait_for(web_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            web_task.cancel()
+            try:
+                await web_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
+    # CLI-task en watchdog wel cancellen — die wachten op input/sleep.
     for t in (cli_task, wd_task):
         if not t.done():
             t.cancel()

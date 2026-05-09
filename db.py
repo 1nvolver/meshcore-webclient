@@ -24,7 +24,13 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 # Bump dit als er backwards-incompatible schema-wijzigingen komen.
 # Code-versie wordt vergeleken met de versie in de Meta-tabel.
 # v2: + Channel tabel
-SCHEMA_VERSION = "2"
+# v3: + Hashtag tabel (virtuele kanalen — filter op Public)  [DEPRECATED in v4]
+# v4: Channel.kind kolom (public/hashtag/private). Hashtag is nu een echt
+#     channel-slot met de standaard publieke PSK; geen DB-only filter meer.
+# v5: + User tabel (multi-user + rollen + per-user toegestane views)
+# v6: + User.must_change_password kolom (admin geeft tijdelijk ww, user moet wijzigen)
+# v7: + Channel.scope kolom (per-kanaal flood-scope, '#regio' string of leeg)
+SCHEMA_VERSION = "7"
 
 
 # ---------------------------------------------------------------------------
@@ -96,18 +102,54 @@ class Channel(Base):
     alias: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     has_key: Mapped[bool] = mapped_column(default=False)
     is_public: Mapped[bool] = mapped_column(default=False)
+    # 'public' = slot 0  |  'hashtag' = standaard publieke PSK  |  'private' = unieke key
+    kind: Mapped[str] = mapped_column(String(16), default="private")
+    # Optionele flood-scope; vóór send wordt set_flood_scope() aangeroepen.
+    # Leeg/None = geen scope (default flood).
+    scope: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
     def display(self) -> str:
         nm = self.alias or self.name or f"channel-{self.idx}"
-        if self.is_public:
+        if self.kind == "public":
             flag = "pub "
-        elif self.has_key:
+        elif self.kind == "hashtag":
+            flag = "tag "
+        elif self.kind == "private":
             flag = "priv"
         else:
             flag = "??? "
         return f"[{self.idx}] {flag} {nm}"
+
+
+class Hashtag(Base):
+    """Virtueel kanaal: een filter op de Public channel op basis van een
+    tekst-tag (bv '#weer'). Geen overeenkomende set_channel-slot op de
+    companion — alleen UI-categorisatie."""
+
+    __tablename__ = "hashtags"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
+class User(Base):
+    """Web UI gebruiker. Wachtwoord-hash leeg = nog niet ingesteld
+    (eerste-login flow). allowed_views is JSON-list met view-namen die
+    de gebruiker mag zien (bv ["chat","bot"])."""
+
+    __tablename__ = "users"
+
+    username: Mapped[str] = mapped_column(String(64), primary_key=True)
+    role: Mapped[str] = mapped_column(String(16), default="user")  # 'admin' | 'user'
+    password_hash: Mapped[str] = mapped_column(Text, default="")
+    allowed_views: Mapped[str] = mapped_column(Text, default='["chat"]')  # JSON
+    # True = wachtwoord moet bij eerste login worden gewijzigd (tijdelijk ww van admin)
+    must_change_password: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    last_login: Mapped[Optional[datetime]] = mapped_column(nullable=True)
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +247,36 @@ async def init_db(path: str | Path = "meshcore.db") -> DBHealthReport:
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # 3a) Kolom-migraties die create_all NIET regelt voor bestaande tabellen
+    async with _engine.begin() as conn:
+        # v3 → v4: voeg Channel.kind kolom toe + zet bestaande rijen op het
+        # juiste type (public voor slot 0, anders private — beste gok).
+        cols_res = await conn.execute(text("PRAGMA table_info(channels)"))
+        cols = {r[1] for r in cols_res.fetchall()}
+        if "kind" not in cols:
+            await conn.execute(text(
+                "ALTER TABLE channels ADD COLUMN kind VARCHAR(16) DEFAULT 'private'"
+            ))
+            await conn.execute(text(
+                "UPDATE channels SET kind='public' WHERE is_public=1"
+            ))
+
+        # v5 → v6: User.must_change_password kolom
+        ucols_res = await conn.execute(text("PRAGMA table_info(users)"))
+        ucols = {r[1] for r in ucols_res.fetchall()}
+        if ucols and "must_change_password" not in ucols:
+            await conn.execute(text(
+                "ALTER TABLE users ADD COLUMN must_change_password BOOLEAN DEFAULT 0"
+            ))
+
+        # v6 → v7: Channel.scope kolom
+        cols_res2 = await conn.execute(text("PRAGMA table_info(channels)"))
+        cols2 = {r[1] for r in cols_res2.fetchall()}
+        if "scope" not in cols2:
+            await conn.execute(text(
+                "ALTER TABLE channels ADD COLUMN scope VARCHAR(64) DEFAULT NULL"
+            ))
+
     # 4-6) schema + shutdown-flag
     async with _Session() as s:
         existing = await _get_meta(s, "schema_version")
@@ -216,8 +288,8 @@ async def init_db(path: str | Path = "meshcore.db") -> DBHealthReport:
             schema_status = "ok"
         else:
             # Forward-only "additive" migratie: nieuwe tabellen zijn al
-            # door create_all aangemaakt, dus oude DB's krijgen ze er bij
-            # zonder data te verliezen. Bump het versienummer.
+            # door create_all aangemaakt, kolom-add hierboven, dus oude DB's
+            # krijgen ze erbij zonder data te verliezen.
             schema_status = f"migrated:{existing}->{SCHEMA_VERSION}"
             await _set_meta(s, "schema_version", SCHEMA_VERSION)
 
@@ -356,6 +428,7 @@ async def upsert_channel(
     name: str,
     has_key: bool = False,
     is_public: bool = False,
+    kind: str = "private",
     alias: Optional[str] = None,
     notes: Optional[str] = None,
 ) -> Channel:
@@ -363,12 +436,16 @@ async def upsert_channel(
     async with Session() as s:
         row = await s.get(Channel, idx)
         if row is None:
-            row = Channel(idx=idx, name=name, has_key=has_key, is_public=is_public, alias=alias, notes=notes)
+            row = Channel(
+                idx=idx, name=name, has_key=has_key, is_public=is_public,
+                kind=kind, alias=alias, notes=notes,
+            )
             s.add(row)
         else:
             row.name = name
             row.has_key = has_key
             row.is_public = is_public
+            row.kind = kind
             if alias is not None:
                 row.alias = alias
             if notes is not None:
@@ -403,6 +480,99 @@ async def channel_by_name_or_alias(query: str) -> Optional[Channel]:
             select(Channel).where((Channel.name == query) | (Channel.alias == query))
         )
         return result.scalar_one_or_none()
+
+
+async def get_channel(idx: int) -> Optional[Channel]:
+    Session = _require_session()
+    async with Session() as s:
+        return await s.get(Channel, idx)
+
+
+async def set_channel_scope(idx: int, scope: Optional[str]) -> bool:
+    """Set/clear de flood-scope voor een kanaal. None of '' wist 'm."""
+    Session = _require_session()
+    async with Session() as s:
+        row = await s.get(Channel, idx)
+        if row is None:
+            return False
+        row.scope = scope if scope else None
+        await s.commit()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Hashtags (virtuele kanalen)
+# ---------------------------------------------------------------------------
+
+def normalize_hashtag(name: str) -> str:
+    """'#weer' / 'weer' / '  #Weer ' → '#weer'  (lowercased, '#'-prefix)."""
+    s = (name or "").strip().lower()
+    if not s:
+        return ""
+    if not s.startswith("#"):
+        s = "#" + s
+    return s
+
+
+async def list_hashtags() -> list[Hashtag]:
+    Session = _require_session()
+    async with Session() as s:
+        result = await s.execute(select(Hashtag).order_by(Hashtag.name))
+        return list(result.scalars().all())
+
+
+async def add_hashtag(name: str, notes: Optional[str] = None) -> Optional[Hashtag]:
+    """Voeg toe of werk bij. Returnt het rijobject, of None bij lege naam."""
+    norm = normalize_hashtag(name)
+    if not norm:
+        return None
+    Session = _require_session()
+    async with Session() as s:
+        row = await s.get(Hashtag, norm)
+        if row is None:
+            row = Hashtag(name=norm, notes=notes)
+            s.add(row)
+        elif notes is not None:
+            row.notes = notes
+        await s.commit()
+        await s.refresh(row)
+    return row
+
+
+async def delete_hashtag(name: str) -> bool:
+    norm = normalize_hashtag(name)
+    Session = _require_session()
+    async with Session() as s:
+        row = await s.get(Hashtag, norm)
+        if row is None:
+            return False
+        await s.delete(row)
+        await s.commit()
+    return True
+
+
+async def public_history_with_tag(tag: str, limit: int = 30) -> list[Message]:
+    """Public-history gefilterd op berichten waarvan de tekst de tag bevat
+    (case-insensitive). Tag wordt zo nodig genormaliseerd."""
+    norm = normalize_hashtag(tag)
+    if not norm:
+        return []
+    Session = _require_session()
+    async with Session() as s:
+        from sqlalchemy import func
+        stmt = (
+            select(Message)
+            .where(
+                Message.kind == "channel",
+                Message.channel_idx == 0,
+                func.lower(Message.text).like(f"%{norm}%"),
+            )
+            .order_by(Message.ts.desc())
+            .limit(limit)
+        )
+        result = await s.execute(stmt)
+        rows = list(result.scalars().all())
+    return list(reversed(rows))
 
 
 # ---------------------------------------------------------------------------
@@ -449,3 +619,122 @@ async def vacuum() -> None:
         # VACUUM mag niet in een transactie. AUTOCOMMIT isolation garandeert dat.
         conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
         await conn.execute(text("VACUUM"))
+
+
+# ---------------------------------------------------------------------------
+# Users
+# ---------------------------------------------------------------------------
+
+async def list_users() -> list[User]:
+    Session = _require_session()
+    async with Session() as s:
+        result = await s.execute(select(User).order_by(User.username))
+        return list(result.scalars().all())
+
+
+async def count_users() -> int:
+    Session = _require_session()
+    async with Session() as s:
+        from sqlalchemy import func
+        r = await s.execute(select(func.count()).select_from(User))
+        return int(r.scalar_one())
+
+
+async def count_admins() -> int:
+    Session = _require_session()
+    async with Session() as s:
+        from sqlalchemy import func
+        r = await s.execute(
+            select(func.count()).select_from(User).where(User.role == "admin")
+        )
+        return int(r.scalar_one())
+
+
+async def get_user(username: str) -> Optional[User]:
+    Session = _require_session()
+    async with Session() as s:
+        return await s.get(User, username)
+
+
+async def add_user(username: str, role: str = "user",
+                   password_hash: str = "",
+                   must_change_password: bool = False,
+                   allowed_views: Optional[list[str]] = None) -> User:
+    """Maak gebruiker aan. Voor admin-CRUD: geef tijdelijk password_hash + must_change_password=True."""
+    Session = _require_session()
+    av = allowed_views if allowed_views is not None else ["chat"]
+    async with Session() as s:
+        existing = await s.get(User, username)
+        if existing is not None:
+            raise ValueError(f"user '{username}' bestaat al")
+        u = User(
+            username=username, role=role,
+            password_hash=password_hash,
+            must_change_password=must_change_password,
+            allowed_views=json.dumps(av),
+        )
+        s.add(u)
+        await s.commit()
+        await s.refresh(u)
+    return u
+
+
+async def set_must_change_password(username: str, value: bool) -> bool:
+    Session = _require_session()
+    async with Session() as s:
+        u = await s.get(User, username)
+        if u is None:
+            return False
+        u.must_change_password = value
+        await s.commit()
+    return True
+
+
+async def set_user_password_hash(username: str, password_hash: str,
+                                  must_change_password: Optional[bool] = None) -> bool:
+    Session = _require_session()
+    async with Session() as s:
+        u = await s.get(User, username)
+        if u is None:
+            return False
+        u.password_hash = password_hash
+        if must_change_password is not None:
+            u.must_change_password = must_change_password
+        await s.commit()
+    return True
+
+
+async def reset_user_password(username: str, password_hash: str) -> bool:
+    """Admin-reset: zet tijdelijk wachtwoord en forceer wijziging bij volgende login."""
+    return await set_user_password_hash(username, password_hash, must_change_password=True)
+
+
+async def touch_user_login(username: str) -> None:
+    Session = _require_session()
+    async with Session() as s:
+        u = await s.get(User, username)
+        if u is not None:
+            u.last_login = _utcnow()
+            await s.commit()
+
+
+async def delete_user(username: str) -> bool:
+    Session = _require_session()
+    async with Session() as s:
+        u = await s.get(User, username)
+        if u is None:
+            return False
+        await s.delete(u)
+        await s.commit()
+    return True
+
+
+async def set_user_role(username: str, role: str) -> bool:
+    Session = _require_session()
+    async with Session() as s:
+        u = await s.get(User, username)
+        if u is None:
+            return False
+        u.role = role
+        await s.commit()
+    return True

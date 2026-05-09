@@ -6,8 +6,12 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "aiosqlite>=0.22.1",
+    "fastapi>=0.136.1",
     "greenlet>=3.5.0",
     "meshcore>=1.1",
     "pyserial>=3.5",
+    "python-multipart>=0.0.27",
+    "python-socketio>=5.16.1",
     "sqlalchemy[asyncio]>=2.0.49",
+    "uvicorn>=0.30",
 ]
