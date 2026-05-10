@@ -233,6 +233,14 @@ APP_HTML = """<!DOCTYPE html>
   .view-content{flex:1;overflow-y:auto;background:#fff}
 
   /* chat-specific */
+  #chat-controls{display:flex;align-items:center;gap:6px;padding:6px 10px;background:#f8f8f8;border-bottom:1px solid #eee;flex:0 0 auto;flex-wrap:wrap}
+  #chat-filter{flex:1;min-width:140px;padding:5px 8px;font:inherit;border:1px solid #ccc;border-radius:3px;font-size:13px}
+  .cc-btn{padding:4px 8px;font:inherit;font-size:12px;background:#fff;color:#333;border:1px solid #ccc;border-radius:3px;cursor:pointer}
+  .cc-btn:hover{background:#eef}
+  .cc-now{font-weight:600;color:#161;border-color:#9c9}
+  .cc-pause{font-weight:600}
+  .cc-pause.paused{background:#fc6;color:#000}
+  .chat-paused-banner{padding:6px 16px;background:#ffe;color:#963;font-size:12px;border-bottom:1px solid #fda;text-align:center}
   #log{padding:8px 16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
   .msg{margin:3px 0;line-height:1.5;cursor:pointer;padding:1px 6px;border-radius:3px;border:1px solid transparent}
   .msg:hover{background:#f6f6f6}
@@ -258,7 +266,15 @@ APP_HTML = """<!DOCTYPE html>
   .emoji-grid button:hover{background:#f0f0f0 !important}
 
   /* admin-specific */
-  .admin-content{padding:14px;overflow-y:auto;max-width:760px}
+  .admin-content{padding:14px;overflow-y:auto}
+  /* icon-action-buttons (in tabellen) */
+  .btn-icon{width:28px;height:28px;border:1px solid #ccc;background:#fff;border-radius:4px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0;margin-right:3px;vertical-align:middle}
+  .btn-icon:hover{background:#f0f0f0}
+  .btn-icon svg{width:16px;height:16px;fill:#555}
+  .btn-icon.danger:hover{background:#fcc}
+  .btn-icon.danger svg{fill:#c33}
+  .btn-icon.toggle-on svg{fill:#161}
+  .btn-icon.toggle-off svg{fill:#aaa}
   .admin-content section{background:#fff;border:1px solid #eee;border-radius:6px;padding:14px;margin-bottom:14px}
   .admin-content h2{margin:0 0 10px;font-size:1em;color:#2c5;border-bottom:1px solid #eee;padding-bottom:6px}
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}
@@ -291,6 +307,29 @@ APP_HTML = """<!DOCTYPE html>
   .rssi-good{color:#161;font-weight:600}
   .rssi-mid{color:#a60;font-weight:600}
   .rssi-bad{color:#c33;font-weight:600}
+  /* path-pillen */
+  .path-row{margin:4px 0;background:#fafafa;border-radius:4px;border:1px solid #eee}
+  .path-row > summary{padding:6px 8px;cursor:pointer;font-size:11px;color:#444;list-style:none}
+  .path-row > summary::-webkit-details-marker{display:none}
+  .path-row > summary::before{content:"\\25B8  ";color:#888}
+  .path-row[open] > summary::before{content:"\\25BE  "}
+  .path-row > summary:hover{background:#f0f0f0}
+  .hop-chain{padding:6px 8px 8px;font-size:11px;line-height:1.9;border-top:1px solid #eee;word-break:break-word}
+  .hop{display:inline-block;padding:1px 6px;border-radius:3px;margin:0 2px;font-family:ui-monospace,monospace;font-size:11px}
+  .hop-known{background:#dfeefd;color:#024;font-weight:600;font-family:inherit}
+  .hop-unknown{background:#f0f0f0;color:#888}
+  .hop-arrow{color:#aaa;margin:0 1px}
+  .hop-self{background:#cfe;color:#040;font-weight:700;font-family:inherit}
+  /* inline ack + signal indicators in chat-list */
+  .ack{display:inline-block;margin-right:6px;font-weight:600;font-family:ui-monospace,monospace;font-size:11px;width:18px;text-align:left}
+  .ack-sent{color:#888}
+  .ack-acked{color:#161}
+  .ack-failed{color:#c33}
+  .sig-dot{display:inline-block;margin-right:6px;font-size:14px;line-height:1;vertical-align:middle;width:12px;text-align:center}
+  .sig-good{color:#161}
+  .sig-ok{color:#9c0}
+  .sig-mid{color:#e80}
+  .sig-bad{color:#c33}
 
   /* ---- toast --------------------------------------------------- */
   #toast{position:fixed;bottom:20px;right:20px;padding:10px 16px;background:#222;color:#fff;border-radius:4px;opacity:0;transition:opacity 0.2s;pointer-events:none;max-width:480px;white-space:pre-wrap;z-index:200}
@@ -326,12 +365,31 @@ APP_HTML = """<!DOCTYPE html>
         <ul id="tree-channels"></ul>
         <div class="tree-add" onclick="promptAddHashtag()">+ hashtag</div>
       </div>
+      <div class="tree-group" id="grp-dm">
+        <div class="tree-group-h" onclick="toggleGroup('grp-dm')">DM</div>
+        <ul id="tree-dms">
+          <li onclick="selectContactsManager()" id="li-contacts-mgr"
+              style="font-style:italic;color:#888;border-bottom:1px solid #eee;margin-bottom:2px">
+            <span class="label">Contactpersonen</span>
+          </li>
+        </ul>
+      </div>
+      <div class="tree-group" id="grp-reports">
+        <div class="tree-group-h" onclick="toggleGroup('grp-reports')">Rapportages</div>
+        <ul>
+          <li onclick="selectReport('overview')"  data-report="overview">Overzicht</li>
+          <li onclick="selectReport('repeaters')" data-report="repeaters">Repeaters</li>
+        </ul>
+      </div>
       <div class="tree-group" id="grp-admin" style="display:none">
         <div class="tree-group-h" onclick="toggleGroup('grp-admin')">Admin</div>
         <ul>
           <li onclick="selectAdminView('radio')"        data-sub="radio">Radio</li>
           <li onclick="selectAdminView('node')"         data-sub="node">Node</li>
+          <li onclick="selectAdminView('prefs')"        data-sub="prefs">Voorkeuren</li>
           <li onclick="selectAdminView('channels')"     data-sub="channels">Channels</li>
+          <li onclick="selectAdminView('contacts')"     data-sub="contacts">Contacten</li>
+          <li onclick="selectAdminView('bots')"         data-sub="bots">Bots</li>
           <li onclick="selectAdminView('housekeeping')" data-sub="housekeeping">Housekeeping</li>
           <li onclick="selectAdminView('users')"        data-sub="users">Gebruikers</li>
         </ul>
@@ -345,6 +403,16 @@ APP_HTML = """<!DOCTYPE html>
     <div class="view-content" id="view-content">
       <!-- Chat view -->
       <div id="chat-view" style="display:flex;flex-direction:column;height:100%">
+        <div id="chat-controls">
+          <input id="chat-filter" type="text" placeholder="filter op tekst…" autocomplete="off">
+          <button class="cc-btn" onclick="loadOlder()" title="laad oudere berichten">↑ ouder</button>
+          <button class="cc-btn" onclick="shiftTime(-12)">-12u</button>
+          <button class="cc-btn" onclick="shiftTime(-2)">-2u</button>
+          <button class="cc-btn" onclick="shiftTime(2)">+2u</button>
+          <button class="cc-btn" onclick="shiftTime(12)">+12u</button>
+          <button class="cc-btn cc-now" onclick="jumpToNow()">nu</button>
+          <button class="cc-btn cc-pause" id="cc-pause-btn" onclick="togglePause()" title="pauzeer/hervat live updates">⏸</button>
+        </div>
         <div id="log" style="flex:1;overflow-y:auto"></div>
         <form id="chat-form">
           <input id="txt" autocomplete="off" placeholder="Bericht naar Public…" disabled>
@@ -357,6 +425,10 @@ APP_HTML = """<!DOCTYPE html>
       </div>
       <!-- Admin view (hidden by default) -->
       <div id="admin-view" class="admin-content" style="display:none"></div>
+      <!-- Reports view -->
+      <div id="reports-view" class="admin-content" style="display:none"></div>
+      <!-- Contacten-beheer view (per-user) -->
+      <div id="contacts-view" class="admin-content" style="display:none"></div>
     </div>
   </div>
 
@@ -376,13 +448,23 @@ APP_HTML = """<!DOCTYPE html>
 <script>
 /* ============== state ============== */
 let STATE = {
-  view: 'chat',           // 'chat' | 'admin'
-  adminSub: 'radio',      // 'radio' | 'node' | 'channels' | 'housekeeping' | 'users'
-  channel: {kind:'public', idx:0, name:'Public'},  // {kind, idx, name}
-  channels: [],           // from /admin/state
-  status: null,           // last /admin/state
-  selectedMsg: null,      // currently selected msg in chat view
-  me: null,               // {username, role, allowed_views, must_change_password}
+  view: 'chat',           // 'chat' | 'admin' | 'reports'
+  adminSub: 'radio',
+  reportSub: 'overview',
+  channel: {kind:'public', idx:0, name:'Public'},  // ook DM: {kind:'dm', peer, name}
+  channels: [],
+  contacts: [],           // van /contacts (companion-contactenlijst)
+  myContacts: [],         // van /my/contacts (per-user opgeslagen)
+  status: null,
+  selectedMsg: null,
+  me: null,
+  msgIndex: {},
+  // chat-controls
+  paused: false,
+  pendingMsgs: [],        // berichten die binnenkomen tijdens pauze
+  filterText: '',         // huidige tekst-filter (lowercase)
+  timeAnchorHours: 0,     // 0 = realtime; >0 = N uur in het verleden
+  reportPeriodHours: 24,  // default grafiekperiode
 };
 
 /* ============== helpers ============== */
@@ -514,6 +596,47 @@ function renderTree(){
   document.querySelectorAll('#grp-admin li[data-sub]').forEach(li => {
     li.classList.toggle('active', STATE.view === 'admin' && li.dataset.sub === STATE.adminSub);
   });
+  // Reports-sub-items markeren
+  document.querySelectorAll('#grp-reports li[data-report]').forEach(li => {
+    li.classList.toggle('active', STATE.view === 'reports' && li.dataset.report === STATE.reportSub);
+  });
+  // DM-tree
+  renderDmTree();
+}
+
+function renderDmTree(){
+  const ul = $('tree-dms');
+  if (!ul) return;
+  // Pak het Contactpersonen-beheer-item, knip het er even uit en plak weer bovenaan
+  const mgr = $('li-contacts-mgr');
+  ul.innerHTML = '';
+  if (mgr) {
+    mgr.classList.toggle('active', STATE.view === 'contacts');
+    ul.appendChild(mgr);
+  }
+
+  const my = STATE.myContacts || [];
+  if (my.length === 0) {
+    const li = document.createElement('li');
+    li.style.color = '#bbb';
+    li.style.fontStyle = 'italic';
+    li.style.fontSize = '0.85em';
+    li.textContent = '(geen opgeslagen contacten)';
+    ul.appendChild(li);
+    return;
+  }
+  my.forEach(c => {
+    const li = document.createElement('li');
+    const lab = document.createElement('span');
+    lab.className = 'label';
+    lab.textContent = c.name || c.pubkey_prefix;
+    li.appendChild(lab);
+    li.onclick = () => selectChannel({kind:'dm', peer: c.pubkey_prefix, name: c.name || c.pubkey_prefix});
+    if (STATE.view === 'chat' && STATE.channel.kind === 'dm' && STATE.channel.peer === c.pubkey_prefix) {
+      li.classList.add('active');
+    }
+    ul.appendChild(li);
+  });
 }
 function makeChanLi(ch){
   const li = document.createElement('li');
@@ -544,21 +667,31 @@ function sameChan(a,b){
 function selectChannel(ch){
   STATE.view = 'chat';
   STATE.channel = ch;
-  $('chat-view').style.display='flex';
-  $('admin-view').style.display='none';
-  $('view-title').textContent = ch.name;
+  _hideAllViews();
+  $('chat-view').style.display = 'flex';
+  const dmSuffix = (ch.kind === 'dm' && ch.peer) ? ' (DM · ' + ch.peer + ')' : '';
+  $('view-title').textContent = ch.name + dmSuffix;
   $('txt').placeholder = 'Bericht naar ' + ch.name + '…';
   loadChatHistory();
   renderTree();
   renderDetail();
 }
+function _hideAllViews(){
+  $('chat-view').style.display = 'none';
+  $('admin-view').style.display = 'none';
+  $('reports-view').style.display = 'none';
+  const cv = $('contacts-view');
+  if (cv) cv.style.display = 'none';
+}
+
 function selectAdminView(sub){
   if (!STATE.me || STATE.me.role !== 'admin') return;
   STATE.view = 'admin';
   STATE.adminSub = sub;
-  $('chat-view').style.display = 'none';
+  _hideAllViews();
   $('admin-view').style.display = 'block';
-  const titles = {radio:'Radio', node:'Node', channels:'Channels',
+  const titles = {radio:'Radio', node:'Node', prefs:'Voorkeuren',
+                  channels:'Channels', contacts:'Contacten', bots:'Bots',
                   housekeeping:'Housekeeping', users:'Gebruikers'};
   $('view-title').textContent = 'Admin — ' + (titles[sub] || sub);
   renderAdmin();
@@ -566,29 +699,282 @@ function selectAdminView(sub){
   renderDetail();
 }
 
+function selectContactsManager(){
+  STATE.view = 'contacts';
+  _hideAllViews();
+  $('contacts-view').style.display = 'block';
+  $('view-title').textContent = 'DM — Contactpersonen';
+  renderContactsManager();
+  renderTree();
+  renderDetail();
+}
+
+async function renderContactsManager(){
+  const el = $('contacts-view');
+  el.innerHTML = '<section><h2>Mijn contactpersonen</h2><div class="kv">…laden…</div></section>';
+  let mine;
+  try { mine = await api('/my/contacts'); } catch(e) { return; }
+
+  const rows = mine.map(c => {
+    const created = c.created_at ? new Date(c.created_at).toLocaleDateString() : '—';
+    const safeName = escapeHTML(c.name || '').replace(/\\\\/g,'\\\\\\\\').replace(/\\x27/g,"\\\\\\x27");
+    const status = c.known_to_companion
+      ? '<span style="color:#161" title="bekend bij companion — DM werkt">✓</span>'
+      : '<span style="color:#c80" title="niet bekend bij companion — DM werkt nog niet">⚠</span>';
+    return '<tr>' +
+      '<td>' + status + ' ' + escapeHTML(c.name || '?') + '</td>' +
+      '<td><code style="font-size:11px;word-break:break-all" title="'+escapeHTML(c.pubkey)+'">' + escapeHTML(c.pubkey_prefix) + '…</code></td>' +
+      '<td>' + escapeHTML(c.notes || '') + '</td>' +
+      '<td>' + escapeHTML(created) + '</td>' +
+      '<td><button class="small danger" onclick="removeMyContact(\\''+c.pubkey+'\\',\\''+safeName+'\\')">verwijder</button></td>' +
+    '</tr>';
+  }).join('');
+
+  el.innerHTML = `
+    <section><h2>Mijn contactpersonen (${mine.length})</h2>
+      <table style="width:100%">
+        <thead><tr>
+          <th>Status · Naam</th><th>Pubkey (prefix · hover voor vol)</th><th>Notitie</th><th>Toegevoegd</th><th></th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="5" style="color:#888">geen opgeslagen contacten</td></tr>'}</tbody>
+      </table>
+      <div class="note">
+        <b>✓</b> = bekend bij companion (DM werkt). <b>⚠</b> = lokaal opgeslagen, maar de companion kent de pubkey nog niet → DM faalt met "not found".
+        Wacht op een advert van die node (of zet "Auto-add adverts" aan in <i>Admin → Voorkeuren</i>) zodat de companion 'm leert kennen.
+      </div>
+    </section>
+
+    <section><h2>Contactpersoon toevoegen</h2>
+      <div class="row"><label>Naam</label><input id="mc-name" type="text" placeholder="bv 'Henk'"></div>
+      <div class="row"><label>Pubkey</label><input id="mc-pk" type="text" placeholder="64 hex chars (32 bytes), bv 2e400317326bc8d4..." style="font-family:monospace"></div>
+      <div class="row"><label>Notitie</label><input id="mc-notes" type="text" placeholder="optioneel"></div>
+      <div class="row"><button onclick="addMyContact()">Toevoegen</button></div>
+      <div class="note">Volledige 32-byte publieke sleutel (te vinden in Admin → Contacten of in een share/QR).</div>
+      <div class="note">Per-user opgeslagen — andere web-gebruikers zien jouw contacten niet.</div>
+    </section>`;
+}
+
+async function addMyContact(){
+  const name = $('mc-name').value.trim();
+  const pk   = $('mc-pk').value.trim().toLowerCase();
+  const notes= $('mc-notes').value.trim();
+  if (!name || !pk) { toast('naam + pubkey vereist','err'); return; }
+  if (pk.length !== 64) { toast('pubkey moet 64 hex chars zijn (gaf '+pk.length+')','err'); return; }
+  try {
+    const r = await api('/my/contacts/add', {method:'POST', body:JSON.stringify({name, pubkey: pk, notes: notes || null})});
+    toast(r.message || 'ok', 'ok');
+    $('mc-name').value = ''; $('mc-pk').value = ''; $('mc-notes').value = '';
+    await refreshMyContacts();
+    renderContactsManager();
+  } catch(e){}
+}
+
+async function removeMyContact(pubkey, name){
+  if (!confirm('Contactpersoon "'+name+'" verwijderen?')) return;
+  try {
+    const r = await api('/my/contacts/remove', {method:'POST', body:JSON.stringify({pubkey: pubkey})});
+    toast(r.message || 'ok', 'ok');
+    await refreshMyContacts();
+    renderContactsManager();
+  } catch(e){}
+}
+
+async function refreshMyContacts(){
+  try {
+    STATE.myContacts = await api('/my/contacts');
+    renderTree();
+  } catch(e){}
+}
+
+function selectReport(sub){
+  STATE.view = 'reports';
+  STATE.reportSub = sub;
+  _hideAllViews();
+  $('reports-view').style.display = 'block';
+  const titles = {overview:'Overzicht', repeaters:'Repeaters'};
+  $('view-title').textContent = 'Rapportages — ' + (titles[sub] || sub);
+  renderReports();
+  renderTree();
+  renderDetail();
+}
+
 /* ============== chat ============== */
 async function loadChatHistory(){
-  $('log').innerHTML='';
+  $('log').innerHTML = '';
   STATE.selectedMsg = null;
+  STATE.msgIndex = {};
+  STATE.pendingMsgs = [];
   try {
-    const path = '/channels/' + STATE.channel.idx + '/history';
+    let basePath;
+    if (STATE.channel.kind === 'dm') {
+      basePath = '/dm/' + encodeURIComponent(STATE.channel.peer) + '/history';
+    } else {
+      basePath = '/channels/' + STATE.channel.idx + '/history';
+    }
+    let path = basePath + '?limit=30';
+    if (STATE.timeAnchorHours > 0) {
+      path = basePath + '?limit=200';
+    }
     const rows = await api(path);
+    let toRender = rows;
+    if (STATE.timeAnchorHours > 0) {
+      const anchorMs = Date.now() - STATE.timeAnchorHours * 3600 * 1000;
+      toRender = rows.filter(m => new Date(m.ts).getTime() <= anchorMs).slice(-30);
+    }
+    toRender.forEach(m => addMsg(m, /*skipFilter=*/false));
+    applyFilter();
+  } catch(e){}
+}
+
+async function loadOlder(){
+  if (STATE.msgIndex && Object.keys(STATE.msgIndex).length === 0) {
+    return loadChatHistory();
+  }
+  const ids = Object.keys(STATE.msgIndex).map(Number);
+  if (ids.length === 0) return;
+  const oldest = Math.min(...ids);
+  let path;
+  if (STATE.channel.kind === 'dm') {
+    path = '/dm/' + encodeURIComponent(STATE.channel.peer) + '/history?limit=30&before_id=' + oldest;
+  } else {
+    path = '/channels/' + STATE.channel.idx + '/history?limit=30&before_id=' + oldest;
+  }
+  try {
+    const rows = await api(path);
+    if (rows.length === 0) {
+      toast('geen oudere berichten', 'ok');
+      return;
+    }
+    // Prepend in DOM (in volgorde, oudste bovenaan)
+    const log = $('log');
+    const wasAtBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+    const sentinel = log.firstChild;
+    rows.forEach(m => {
+      const div = _buildMsgEl(m);
+      log.insertBefore(div, sentinel);
+    });
+    applyFilter();
+    // Scroll niet auto naar onder als we boven aan het kijken zijn
+    if (wasAtBottom) log.scrollTop = log.scrollHeight;
+  } catch(e){}
+}
+
+function shiftTime(deltaH){
+  // deltaH negatief = ouder, positief = recenter
+  STATE.timeAnchorHours = Math.max(0, STATE.timeAnchorHours - deltaH);
+  updateNowButton();
+  loadChatHistory();
+}
+
+function jumpToNow(){
+  STATE.timeAnchorHours = 0;
+  STATE.paused = false;
+  updatePauseButton();
+  updateNowButton();
+  loadChatHistory();
+}
+
+function updateNowButton(){
+  const btn = document.querySelector('.cc-now');
+  if (!btn) return;
+  if (STATE.timeAnchorHours > 0) {
+    btn.textContent = 'nu (-' + STATE.timeAnchorHours + 'u)';
+    btn.style.background = '#fc6';
+  } else {
+    btn.textContent = 'nu';
+    btn.style.background = '';
+  }
+}
+
+function togglePause(){
+  STATE.paused = !STATE.paused;
+  updatePauseButton();
+  if (!STATE.paused) {
+    // Replay queued msgs
+    const q = STATE.pendingMsgs;
+    STATE.pendingMsgs = [];
+    q.forEach(m => addMsg(m));
+  }
+}
+
+function updatePauseButton(){
+  const btn = $('cc-pause-btn');
+  if (!btn) return;
+  if (STATE.paused) {
+    btn.textContent = '▶ ' + (STATE.pendingMsgs.length || '');
+    btn.classList.add('paused');
+    btn.title = 'hervat live updates (' + STATE.pendingMsgs.length + ' wachtend)';
+  } else {
+    btn.textContent = '⏸';
+    btn.classList.remove('paused');
+    btn.title = 'pauzeer live updates';
+  }
+}
+
+function applyFilter(){
+  // Lokaal verbergen tijdens typen / live-msgs
+  const f = STATE.filterText;
+  document.querySelectorAll('#log .msg').forEach(el => {
+    if (!f) { el.style.display = ''; return; }
+    el.style.display = el.textContent.toLowerCase().includes(f) ? '' : 'none';
+  });
+}
+
+let _searchTimer = null;
+async function runServerSearch(q){
+  // Server-side search door alle berichten in dit kanaal/dm
+  if (!q) {
+    // Filter leeg → reset naar gewone history
+    return loadChatHistory();
+  }
+  $('log').innerHTML = '';
+  STATE.msgIndex = {};
+  try {
+    const params = new URLSearchParams({q, limit: '200'});
+    if (STATE.channel.kind === 'dm') {
+      params.set('kind', 'dm');
+      params.set('peer', STATE.channel.peer);
+    } else {
+      params.set('kind', 'channel');
+      params.set('channel_idx', String(STATE.channel.idx));
+    }
+    const rows = await api('/messages/search?' + params.toString());
     rows.forEach(m => addMsg(m));
+    if (rows.length === 0) {
+      const div = document.createElement('div');
+      div.className = 'msg sys';
+      div.style.color = '#888';
+      div.style.fontStyle = 'italic';
+      div.textContent = '— geen resultaten voor "'+q+'" —';
+      $('log').appendChild(div);
+    }
   } catch(e){}
 }
 
 /* Extract afzendernaam uit channel-msg tekst.
    Companion firmware geeft pubkey_prefix vaak NIET mee op channels;
-   afzenders prefixen hun naam zelf met "NAAM: tekst". */
+   afzenders prefixen hun naam zelf met "NAAM: tekst".
+   Heuristiek: naam = alles tot eerste ':', max 64 chars, mag spaties bevatten,
+   geen newlines, geen URL-achtige patronen ('://'). */
 function extractSender(m){
   if (m.peer && m.peer !== '?' && m.peer !== 'self') return m.peer;
   const t = m.text || '';
+  if (!t) return null;
+  // Vermijd URLs: 'http://...' zou anders 'http' als naam pakken
+  const urlIdx = t.indexOf('://');
   const colon = t.indexOf(':');
-  if (colon > 0 && colon < 32) {
-    const candidate = t.substring(0, colon).trim();
-    if (candidate && !candidate.includes(' ')) return candidate;
+  if (colon <= 0 || colon > 64) return null;
+  if (urlIdx >= 0 && urlIdx <= colon) return null;
+  const head = t.substring(0, colon);
+  if (head.indexOf(String.fromCharCode(10)) >= 0) return null;
+  if (head.indexOf(String.fromCharCode(13)) >= 0) return null;
+  const candidate = head.trim();
+  if (!candidate) return null;
+  // Geen control chars in naam
+  for (let i = 0; i < candidate.length; i++) {
+    if (candidate.charCodeAt(i) < 32) return null;
   }
-  return null;
+  return candidate;
 }
 
 /* Strip "NAAM: " uit het zichtbare bericht zodat de body schoner is. */
@@ -601,19 +987,73 @@ function stripNamePrefix(m){
   return m.text || '';
 }
 
-function addMsg(m){
+function ackIcon(msg){
+  if (!msg || msg.direction !== 'out') return '';
+  const status = msg.ack_status;
+  if (msg.kind === 'dm') {
+    if (status === 'acked')   return '<span class="ack ack-acked" title="bevestigd">✓✓</span>';
+    if (status === 'failed')  return '<span class="ack ack-failed" title="mislukt">!!</span>';
+    if (status === 'sent')    return '<span class="ack ack-sent" title="verzonden, wachten op ack">✓</span>';
+    return '';
+  }
+  // Channel-out: geen ack op protocol-niveau, maar wel implicit-repeat detectie
+  if (msg.kind === 'channel') {
+    if (status === 'repeated') return '<span class="ack ack-acked" title="opgepikt door mesh-repeater">↻</span>';
+    if (status === 'sent')     return '<span class="ack ack-sent" title="verzonden">✓</span>';
+  }
+  return '';
+}
+
+function signalDot(meta){
+  // Eén gekleurd bolletje op basis van SNR (of hops als geen SNR).
+  let cls = null, label = '';
+  if (typeof meta.snr === 'number') {
+    if (meta.snr >= 7)       { cls = 'sig-good'; label = 'SNR ' + meta.snr.toFixed(1) + ' dB (uitstekend)'; }
+    else if (meta.snr >= 0)  { cls = 'sig-ok';   label = 'SNR ' + meta.snr.toFixed(1) + ' dB (goed)'; }
+    else if (meta.snr >= -7) { cls = 'sig-mid';  label = 'SNR ' + meta.snr.toFixed(1) + ' dB (matig)'; }
+    else                     { cls = 'sig-bad';  label = 'SNR ' + meta.snr.toFixed(1) + ' dB (slecht)'; }
+  } else if (typeof meta.hops === 'number') {
+    if (meta.hops <= 0)        { cls = 'sig-good'; label = 'direct (0 hops)'; }
+    else if (meta.hops === 1)  { cls = 'sig-ok';   label = '1 hop'; }
+    else if (meta.hops === 2)  { cls = 'sig-mid';  label = '2 hops'; }
+    else                       { cls = 'sig-bad';  label = meta.hops + ' hops'; }
+  }
+  if (!cls) return '';
+  return '<span class="sig-dot '+cls+'" title="'+label+'">●</span>';
+}
+
+function _buildMsgEl(m){
   const div = document.createElement('div');
   div.className = 'msg ' + (m.direction === 'out' ? 'out' : 'in');
   const displayPeer = extractSender(m) || (m.direction === 'out' ? 'self' : '?');
   const displayText = stripNamePrefix(m);
   if (m.direction === 'in' && isMention(m)) div.classList.add('mention');
-  div.innerHTML = '<span class="ts">'+escapeHTML(fmtTs(m.ts))+'</span><span class="peer">'+escapeHTML(displayPeer)+':</span>'+escapeHTML(displayText);
+
+  let prefix = '';
+  if (m.direction === 'out') prefix = ackIcon(m);
+  else                       prefix = signalDot(extractMeta(m));
+
+  div.innerHTML = prefix +
+    '<span class="ts">'+escapeHTML(fmtTs(m.ts))+'</span>' +
+    '<span class="peer">'+escapeHTML(displayPeer)+':</span>' +
+    escapeHTML(displayText);
   div.onclick = () => selectMsg(m, div);
-  // bewaar de geparseerde sender voor reply
   m._sender = displayPeer;
   m._body = displayText;
+  if (m.id) STATE.msgIndex[m.id] = {el: div, msg: m};
+  return div;
+}
+
+function addMsg(m){
+  const div = _buildMsgEl(m);
   $('log').appendChild(div);
-  $('log').scrollTop = $('log').scrollHeight;
+  // Filter direct toepassen
+  const f = STATE.filterText;
+  if (f && !div.textContent.toLowerCase().includes(f)) {
+    div.style.display = 'none';
+  } else {
+    $('log').scrollTop = $('log').scrollHeight;
+  }
 }
 
 function selectMsg(m, el){
@@ -630,16 +1070,50 @@ sock.on('connect',    () => { $('conn-title').textContent='MeshCore Gateway · v
 sock.on('disconnect', () => { $('conn-title').textContent='MeshCore Gateway · verbroken'; $('txt').disabled=true; $('btn').disabled=true; });
 sock.on('connect_error', () => { setTimeout(()=>location.href='/login', 1500); });
 sock.on('msg', (m) => {
-  if (m.kind !== 'channel') return;
-  // Mention-detectie ALTIJD, ongeacht actieve view — zo mis je 'm niet als
-  // je net in admin zit of in een ander kanaal.
-  if (m.direction === 'in' && isMention(m)) {
+  // Mention-detectie: alleen op kanaal-msgs (DMs zijn al gericht aan mij)
+  if (m.kind === 'channel' && m.direction === 'in' && isMention(m)) {
     onMention(m);
   }
-  // Display-filter alleen voor de huidige view
   if (STATE.view !== 'chat') return;
-  if (m.channel_idx === STATE.channel.idx) {
-    addMsg(m);
+  // Filter op huidige view: channel of DM
+  if (STATE.channel.kind === 'dm') {
+    if (m.kind !== 'dm') return;
+    if (m.peer !== STATE.channel.peer) return;
+  } else {
+    if (m.kind !== 'channel') return;
+    if (m.channel_idx !== STATE.channel.idx) return;
+  }
+  if (STATE.timeAnchorHours > 0) return;
+  if (STATE.filterText) return;  // tijdens search-modus geen live-updates
+  if (STATE.paused) {
+    STATE.pendingMsgs.push(m);
+    updatePauseButton();
+    return;
+  }
+  addMsg(m);
+});
+
+sock.on('msg-update', (u) => {
+  // Update inline ack-icoon en bewaarde state voor latency in detail
+  if (!u || !u.msg_id) return;
+  const entry = STATE.msgIndex[u.msg_id];
+  if (entry) {
+    entry.msg.ack_status = u.ack_status;
+    entry.msg.acked_at = u.acked_at;
+    entry.msg.latency_s = u.latency_s;
+    // Re-render alleen het ack-icoon (eerste span vervangen)
+    const oldAck = entry.el.querySelector('.ack');
+    const newAck = document.createElement('span');
+    newAck.innerHTML = ackIcon(entry.msg);
+    if (oldAck && newAck.firstChild) entry.el.replaceChild(newAck.firstChild, oldAck);
+    else if (newAck.firstChild) entry.el.insertBefore(newAck.firstChild, entry.el.firstChild);
+  }
+  // Detail-pane bijwerken als deze msg geselecteerd is
+  if (STATE.selectedMsg && STATE.selectedMsg.id === u.msg_id) {
+    STATE.selectedMsg.ack_status = u.ack_status;
+    STATE.selectedMsg.acked_at = u.acked_at;
+    STATE.selectedMsg.latency_s = u.latency_s;
+    renderDetail();
   }
 });
 
@@ -648,7 +1122,12 @@ $('chat-form').addEventListener('submit', (e) => {
   const t = $('txt').value.trim();
   if (!t) return;
   $('btn').disabled = true;
-  const payload = {channel_idx: STATE.channel.idx, text: t};
+  let payload;
+  if (STATE.channel.kind === 'dm') {
+    payload = {kind:'dm', peer: STATE.channel.peer, text: t};
+  } else {
+    payload = {channel_idx: STATE.channel.idx, text: t};
+  }
   sock.emit('send', payload, (ack) => {
     $('btn').disabled = false;
     if (!ack || !ack.ok) toast('verzenden mislukt: '+(ack && ack.err || '?'), 'err');
@@ -739,7 +1218,10 @@ function renderAdmin(){
   switch (sub) {
     case 'radio':        return renderAdminRadio();
     case 'node':         return renderAdminNode();
+    case 'prefs':        return renderAdminPrefs();
     case 'channels':     return renderAdminChannels();
+    case 'contacts':     return renderAdminContacts();
+    case 'bots':         return renderAdminBots();
     case 'housekeeping': return renderAdminHousekeeping();
     case 'users':        return renderAdminUsers();
     default:             return renderAdminRadio();
@@ -769,6 +1251,14 @@ function renderAdminRadio(){
         <button onclick="setPathHashMode()">Toepassen</button>
         <span class="note">experimenteel — alle nodes in mesh moeten gelijk zijn</span>
       </div>
+    </section>
+
+    <section><h2>Advert verzenden</h2>
+      <div class="row">
+        <button onclick="sendAdvert(false)">Zero-hop</button>
+        <button onclick="sendAdvert(true)">Flood</button>
+        <span class="note">zero-hop = alleen directe buren · flood = via alle repeaters</span>
+      </div>
     </section>`;
   const n = s.node || {};
   const r = s.radio || {};
@@ -796,6 +1286,15 @@ function renderAdminRadio(){
   });
   $('r-freq').value=s.radio.freq||''; $('r-bw').value=s.radio.bw||''; $('r-sf').value=s.radio.sf||''; $('r-cr').value=s.radio.cr||''; $('r-tx').value=s.radio.tx_power||'';
   if (typeof n.path_hash_mode === 'number') $('r-phm').value = String(n.path_hash_mode);
+}
+
+async function sendAdvert(flood){
+  const kind = flood ? 'flood (door alle repeaters)' : 'zero-hop (alleen directe buren)';
+  if (!confirm('Advert verzenden — ' + kind + '?')) return;
+  try {
+    const r = await api('/admin/advert', {method:'POST', body:JSON.stringify({flood})});
+    toast(r.message || 'ok', 'ok');
+  } catch(e){}
 }
 
 async function setPathHashMode(){
@@ -864,6 +1363,442 @@ function renderAdminHousekeeping(){
       <div class="row"><button onclick="cleanAll()" class="danger">Alles verwijderen</button><button onclick="vacuum()">VACUUM</button></div>
     </section>`;
   $('db-count').textContent = (s.db?.count ?? '?') + ' berichten';
+}
+
+function _formatPeriodHours(h){
+  if (h >= 168)  return Math.round(h/168) + 'd';
+  if (h >= 24)   return Math.round(h/24) + 'd';
+  return h + 'u';
+}
+
+function _fmtAxisTime(secsAgo){
+  // secs ago → "-Xh", "-Xm", "-Xd"
+  if (secsAgo < 60)        return '-' + Math.round(secsAgo) + 's';
+  if (secsAgo < 3600)      return '-' + Math.round(secsAgo/60) + 'm';
+  if (secsAgo < 86400)     return '-' + Math.round(secsAgo/3600) + 'u';
+  return '-' + Math.round(secsAgo/86400) + 'd';
+}
+
+async function renderAdminPrefs(){
+  const el = $('admin-view');
+  el.innerHTML = '<section><h2>Voorkeuren</h2><div class="kv">…laden…</div></section>';
+  let p;
+  try { p = await api('/admin/prefs'); } catch(e) { return; }
+
+  const telOpts = '<option value="0">0 — uit</option>' +
+                  '<option value="1">1 — on-request</option>' +
+                  '<option value="2">2 — autonoom</option>' +
+                  '<option value="3">3 — beide</option>';
+  const advOpts = '<option value="0">0 — geen locatie</option>' +
+                  '<option value="1">1 — exact</option>' +
+                  '<option value="2">2 — geblurd</option>' +
+                  '<option value="3">3 — alleen aan contacten</option>';
+
+  el.innerHTML = `
+    <section><h2>Contact-policy</h2>
+      <div class="row">
+        <label>Auto-add adverts</label>
+        <select id="pf-mac">
+          <option value="false">aan (auto)</option>
+          <option value="true">uit (alleen handmatig)</option>
+        </select>
+      </div>
+      <div class="note">Bepaalt of nieuwe contacten (clients én repeaters) automatisch worden opgeslagen wanneer hun advert binnenkomt. MeshCore biedt geen filter per type — alles-of-niets.</div>
+      <div class="row" style="margin-top:14px">
+        <button onclick="savePrefSingle('manual_add_contacts', $('pf-mac').value === 'true')">Opslaan</button>
+      </div>
+    </section>
+
+    <section><h2>Locatie & adverts</h2>
+      <div class="row">
+        <label>Adv-loc-policy</label>
+        <select id="pf-alp">${advOpts}</select>
+        <button onclick="savePrefSingle('adv_loc_policy', parseInt($('pf-alp').value))">Opslaan</button>
+      </div>
+    </section>
+
+    <section><h2>Telemetry</h2>
+      <div class="row">
+        <label>Base</label><select id="pf-tb">${telOpts}</select>
+        <button onclick="savePrefSingle('telemetry_mode_base', parseInt($('pf-tb').value))">Opslaan</button>
+      </div>
+      <div class="row">
+        <label>Locatie</label><select id="pf-tl">${telOpts}</select>
+        <button onclick="savePrefSingle('telemetry_mode_loc', parseInt($('pf-tl').value))">Opslaan</button>
+      </div>
+      <div class="row">
+        <label>Environment</label><select id="pf-te">${telOpts}</select>
+        <button onclick="savePrefSingle('telemetry_mode_env', parseInt($('pf-te').value))">Opslaan</button>
+      </div>
+    </section>
+
+    <section><h2>Berichten</h2>
+      <div class="row">
+        <label>Multi-acks</label>
+        <input id="pf-ma" type="number" min="0" max="3" style="width:80px">
+        <button onclick="savePrefSingle('multi_acks', parseInt($('pf-ma').value))">Opslaan</button>
+        <span class="note">aantal extra ack-herhalingen voor DM's (0 = standaard)</span>
+      </div>
+      <div class="note">
+        <b>Niet beschikbaar via SDK</b>: <i>auto-retry</i>, <i>auto-reset path</i> en <i>direct-msg-acks aan/uit</i> zijn geen losse settings in de companion-API. DM-retries worden door de firmware zelf afgehandeld op basis van <code>multi_acks</code> en de path-hash.
+      </div>
+    </section>
+  `;
+  $('pf-mac').value = p.manual_add_contacts ? 'true' : 'false';
+  if (p.adv_loc_policy != null)      $('pf-alp').value = String(p.adv_loc_policy);
+  if (p.telemetry_mode_base != null) $('pf-tb').value  = String(p.telemetry_mode_base);
+  if (p.telemetry_mode_loc != null)  $('pf-tl').value  = String(p.telemetry_mode_loc);
+  if (p.telemetry_mode_env != null)  $('pf-te').value  = String(p.telemetry_mode_env);
+  if (p.multi_acks != null)          $('pf-ma').value  = String(p.multi_acks);
+}
+
+async function savePrefSingle(key, value){
+  const body = {}; body[key] = value;
+  try {
+    const r = await api('/admin/prefs', {method:'POST', body:JSON.stringify(body)});
+    toast(r.message || 'ok', 'ok');
+  } catch(e){}
+}
+
+async function renderAdminContacts(){
+  const el = $('admin-view');
+  el.innerHTML = '<section><h2>Contacten</h2><div class="kv">…laden…</div></section>';
+  let cs;
+  try { cs = await api('/contacts'); } catch(e) { return; }
+
+  const typeLabel = t => (t === 1 ? 'client' : t === 2 ? 'repeater' : t === 3 ? 'room' : '?');
+  const rows = cs.map(c => {
+    const last = c.last_advert ? new Date(c.last_advert*1000).toLocaleString() : '—';
+    const acts = '<button class="small danger" onclick="removeContact(\\''+c.pubkey+'\\',\\''+escapeHTML(c.name||'').replace(/\\\\/g,"\\\\\\\\").replace(/'/g,"\\\\'")+'\\')">remove</button>';
+    return '<tr>' +
+      '<td>' + escapeHTML(c.name || '?') + '</td>' +
+      '<td>' + typeLabel(c.type) + '</td>' +
+      '<td><code style="font-size:11px">' + c.pubkey_prefix + '</code></td>' +
+      '<td>' + escapeHTML(last) + '</td>' +
+      '<td>' + acts + '</td>' +
+    '</tr>';
+  }).join('');
+
+  el.innerHTML = `
+    <section><h2>Bekende contacten (${cs.length})</h2>
+      <table style="width:100%">
+        <thead><tr>
+          <th>Naam</th><th>Type</th><th>Pubkey</th><th>Laatste advert</th><th></th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="5" style="color:#888">geen contacten</td></tr>'}</tbody>
+      </table>
+    </section>
+  `;
+}
+
+async function removeContact(pubkey, name){
+  if (!confirm('Contact "'+name+'" verwijderen uit de companion?')) return;
+  try {
+    const r = await api('/contacts/remove', {method:'POST', body:JSON.stringify({key: pubkey})});
+    toast(r.message || 'ok', 'ok');
+    refresh();
+    renderAdminContacts();
+  } catch(e){}
+}
+
+async function renderAdminBots(){
+  const el = $('admin-view');
+  el.innerHTML = '<section><h2>Bots</h2><div class="kv">…laden…</div></section>';
+  let bots;
+  try { bots = await api('/admin/bots'); } catch(e) { return; }
+
+  // Build channel options from current channels
+  const chanOpts = (STATE.channels || []).map(c => {
+    const lbl = c.alias || c.name || ('slot ' + c.idx);
+    return '<option value="'+c.idx+'">[' + c.idx + '] ' + escapeHTML(lbl) + '</option>';
+  }).join('');
+
+  const ICON_PENCIL = '<svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>';
+  const ICON_POWER  = '<svg viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42A6.92 6.92 0 0 1 19 12a7 7 0 0 1-14 0c0-2.18 1-4.13 2.58-5.42L6.17 5.17A8.94 8.94 0 0 0 3 12a9 9 0 0 0 18 0c0-2.74-1.23-5.18-3.17-6.83z"/></svg>';
+  const ICON_TRASH  = '<svg viewBox="0 0 24 24"><path d="M9 3v1H4v2h16V4h-5V3H9zm-3 5l1 13h10l1-13H6zm3 2h2v9H9v-9zm4 0h2v9h-2v-9z"/></svg>';
+
+  const rows = bots.map(b => {
+    const chanLbl = (() => {
+      const c = (STATE.channels || []).find(x => x.idx === b.channel_idx);
+      return c ? (c.alias || c.name || ('slot ' + c.idx)) : ('slot ' + b.channel_idx);
+    })();
+    const en = b.enabled
+      ? '<span style="color:#161;font-weight:600">aan</span>'
+      : '<span style="color:#888">uit</span>';
+    const toggleClass = b.enabled ? 'toggle-on' : 'toggle-off';
+    const toggleTitle = b.enabled ? 'uit zetten' : 'aan zetten';
+    return '<tr>' +
+      '<td>' + escapeHTML(b.name) + '</td>' +
+      '<td>' + escapeHTML(chanLbl) + '</td>' +
+      '<td><code style="font-size:13px">?'+escapeHTML(b.keyword)+'</code></td>' +
+      '<td>' + en + '</td>' +
+      '<td style="font-family:ui-monospace,monospace;font-size:12px;word-break:break-word">' +
+        escapeHTML(b.reply || '') + '</td>' +
+      '<td style="white-space:nowrap">' +
+        '<button class="btn-icon" title="bewerken" onclick="botEditPrompt('+b.id+')">'+ICON_PENCIL+'</button>' +
+        '<button class="btn-icon '+toggleClass+'" title="'+toggleTitle+'" onclick="botToggle('+b.id+','+!b.enabled+')">'+ICON_POWER+'</button>' +
+        '<button class="btn-icon danger" title="verwijderen" onclick="botRemove('+b.id+')">'+ICON_TRASH+'</button>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+
+  el.innerHTML = `
+    <section><h2>Bots (${bots.length})</h2>
+      <table style="width:100%;table-layout:fixed">
+        <colgroup>
+          <col style="width:18%">
+          <col style="width:14%">
+          <col style="width:14%">
+          <col style="width:8%">
+          <col>
+          <col style="width:120px">
+        </colgroup>
+        <thead><tr>
+          <th>Naam</th><th>Kanaal</th><th>Keyword</th><th>Status</th><th>Reply</th><th></th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="6" style="color:#888">geen bots</td></tr>'}</tbody>
+      </table>
+      <div class="note">Bots reageren alleen op berichten waarin <code>@[<naam-van-deze-node>]</code> én <code>?keyword</code> voorkomen.</div>
+    </section>
+
+    <section><h2>Bot toevoegen</h2>
+      <div class="row"><label>Naam</label><input id="bt-name" type="text" placeholder="bv 'Tijd-bot'"></div>
+      <div class="row"><label>Beschrijving</label><input id="bt-desc" type="text" placeholder="optioneel"></div>
+      <div class="row"><label>Kanaal</label><select id="bt-chan">${chanOpts}</select></div>
+      <div class="row"><label>Keyword</label><span style="font-family:monospace">?</span><input id="bt-kw" type="text" placeholder="bv 'tijd' (zonder ?)"></div>
+      <div class="row" style="align-items:flex-start">
+        <label>Reply-template</label>
+        <textarea id="bt-reply" rows="3" placeholder="bv 'Het is nu {TIME}'" style="flex:1;padding:6px 8px;font:inherit;border:1px solid #ccc;border-radius:4px;font-family:ui-monospace,monospace;font-size:13px"></textarea>
+      </div>
+      <div class="row">
+        <label></label>
+        <span class="note">Variabelen: <code>{TIME}</code> · <code>{UPRADIO}</code> · <code>{UPNODE}</code> · <code>{HELP}</code></span>
+      </div>
+      <div class="row"><button onclick="botAdd()">Toevoegen</button></div>
+    </section>`;
+}
+
+async function botAdd(){
+  const name = $('bt-name').value.trim();
+  const desc = $('bt-desc').value.trim();
+  const chan = parseInt($('bt-chan').value);
+  const kw   = $('bt-kw').value.trim();
+  const rep  = $('bt-reply').value;
+  if (!name || !kw || !rep) { toast('naam, keyword en reply vereist','err'); return; }
+  try {
+    const r = await api('/admin/bots/add', {method:'POST', body:JSON.stringify({
+      name, description: desc || null, channel_idx: chan,
+      keyword: kw, reply: rep, enabled: true,
+    })});
+    toast(r.message || 'ok', 'ok');
+    ['bt-name','bt-desc','bt-kw','bt-reply'].forEach(i => $(i).value = '');
+    renderAdminBots();
+  } catch(e){}
+}
+
+async function botToggle(id, newState){
+  try {
+    await api('/admin/bots/update', {method:'POST', body:JSON.stringify({id, enabled: newState})});
+    renderAdminBots();
+  } catch(e){}
+}
+
+async function botRemove(id){
+  if (!confirm('Bot verwijderen?')) return;
+  try {
+    const r = await api('/admin/bots/remove', {method:'POST', body:JSON.stringify({id})});
+    toast(r.message || 'ok', 'ok');
+    renderAdminBots();
+  } catch(e){}
+}
+
+async function botEditPrompt(id){
+  // Pak huidige bot uit de lijst (eenvoudige edit zonder modal)
+  try {
+    const bots = await api('/admin/bots');
+    const b = bots.find(x => x.id === id);
+    if (!b) return;
+    const newName = prompt('Naam:', b.name);
+    if (newName === null) return;
+    const newKw = prompt('Keyword (zonder ?):', b.keyword);
+    if (newKw === null) return;
+    const newReply = prompt('Reply-template:', b.reply);
+    if (newReply === null) return;
+    const newChan = prompt('Kanaal (slot-nummer):', String(b.channel_idx));
+    if (newChan === null) return;
+    const r = await api('/admin/bots/update', {method:'POST', body:JSON.stringify({
+      id, name: newName, keyword: newKw, reply: newReply,
+      channel_idx: parseInt(newChan),
+    })});
+    toast(r.message || 'ok', 'ok');
+    renderAdminBots();
+  } catch(e){}
+}
+
+async function renderReports(){
+  if (STATE.reportSub === 'repeaters') return renderReportRepeaters();
+  return renderReportOverview();
+}
+
+async function renderReportOverview(){
+  const el = $('reports-view');
+  el.innerHTML = '<section><h2>Overzicht</h2><div class="kv">…laden…</div></section>';
+  const hours = STATE.reportPeriodHours || 24;
+  let data;
+  try {
+    data = await api('/reports/overview?hours=' + hours);
+  } catch(e) { return; }
+
+  // ----- Bar-chart -----
+  const buckets = data.buckets || [];
+  const N = buckets.length || 1;
+  const rawMax = Math.max(1, ...buckets);
+  // Rond max omhoog naar dichtstbijzijnde 10-tal (min 10 voor leesbaarheid)
+  const yMax = Math.max(10, Math.ceil(rawMax / 10) * 10);
+
+  const PAD_L = 36, PAD_R = 8, PAD_T = 8, PAD_B = 24;
+  const PLOT_W = 560, PLOT_H = 110;
+  const W = PAD_L + PLOT_W + PAD_R, H = PAD_T + PLOT_H + PAD_B;
+  const BW = PLOT_W / N;
+
+  // Y-as gridlines op 0, 1/5, 2/5, 3/5, 4/5, 5/5
+  let yLines = '';
+  for (let i = 0; i <= 5; i++) {
+    const v = Math.round(yMax * i / 5);
+    const y = PAD_T + PLOT_H - (v / yMax) * PLOT_H;
+    yLines +=
+      '<line x1="'+PAD_L+'" y1="'+y+'" x2="'+(PAD_L+PLOT_W)+'" y2="'+y+'" stroke="#eee" stroke-width="1"/>' +
+      '<text x="'+(PAD_L-4)+'" y="'+(y+3)+'" fill="#888" text-anchor="end" font-size="10">'+v+'</text>';
+  }
+
+  // X-as gridlines + labels op 6 punten (1/6 deelpunten)
+  const periodSecs = hours * 3600;
+  let xLines = '';
+  for (let i = 0; i <= 6; i++) {
+    const x = PAD_L + (PLOT_W * i / 6);
+    xLines += '<line x1="'+x+'" y1="'+PAD_T+'" x2="'+x+'" y2="'+(PAD_T+PLOT_H)+'" stroke="#f4f4f4"/>';
+    if (i === 6) {
+      xLines += '<text x="'+x+'" y="'+(H-6)+'" fill="#666" text-anchor="end" font-size="10">nu</text>';
+    } else {
+      const secsAgo = periodSecs * (1 - i/6);
+      xLines += '<text x="'+x+'" y="'+(H-6)+'" fill="#888" text-anchor="middle" font-size="10">'+_fmtAxisTime(secsAgo)+'</text>';
+    }
+  }
+
+  // Bars
+  const bars = buckets.map((v,i) => {
+    const h = (v / yMax) * PLOT_H;
+    const x = PAD_L + i * BW + 1;
+    const y = PAD_T + PLOT_H - h;
+    return '<rect x="'+x+'" y="'+y+'" width="'+(BW-2)+'" height="'+h+'" fill="#2c5"/>';
+  }).join('');
+
+  const chart =
+    '<svg width="'+W+'" height="'+H+'" style="display:block;max-width:100%">' +
+    yLines + xLines + bars +
+    '<line x1="'+PAD_L+'" y1="'+(PAD_T+PLOT_H)+'" x2="'+(PAD_L+PLOT_W)+'" y2="'+(PAD_T+PLOT_H)+'" stroke="#888"/>' +
+    '</svg>';
+
+  // ----- Top channels -----
+  const chanRows = (data.top_channels || []).map(c => {
+    const dbc = STATE.channels.find(x => x.idx === c.channel_idx);
+    const naam = dbc ? (dbc.alias || dbc.name || ('CH'+c.channel_idx)) : ('CH'+c.channel_idx);
+    return '<tr><td>'+escapeHTML(naam)+'</td><td style="text-align:right">'+c.count+'</td></tr>';
+  }).join('');
+
+  // ----- Ack-rate -----
+  const ackRate = data.ack_rate;
+  const ackPct = (typeof ackRate === 'number') ? Math.round(ackRate*100)+'%' : '—';
+  const ackC = data.ack_count || {};
+
+  el.innerHTML = `
+    <section><h2>Totalen</h2><div class="kv">
+      <div><span class="k">laatste 24u:</span>${data.totals.last_24h}</div>
+      <div><span class="k">laatste 7d:</span>${data.totals.last_7d}</div>
+      <div><span class="k">totaal in DB:</span>${data.totals.total}</div>
+    </div></section>
+
+    <section>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 style="margin:0;border:0;padding:0">Berichten per periode</h2>
+        <div>
+          <label style="font-size:0.85em;color:#666">periode</label>
+          <select id="rp-period" onchange="setReportPeriod(this.value)">
+            <option value="168">7 dagen</option>
+            <option value="48">48 uur</option>
+            <option value="24">24 uur</option>
+            <option value="12">12 uur</option>
+            <option value="4">4 uur</option>
+            <option value="1">1 uur</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top:10px;overflow-x:auto">${chart}</div>
+      <div class="note">kolom: ${data.bucket_secs}s</div>
+    </section>
+
+    <section><h2>Top-kanalen (laatste 7 dagen)</h2>
+      <table><thead><tr><th>Kanaal</th><th style="text-align:right">Aantal</th></tr></thead>
+      <tbody>${chanRows || '<tr><td colspan="2" style="color:#888">geen data</td></tr>'}</tbody></table>
+    </section>
+
+    <section><h2>Ack-rate (DM, ${_formatPeriodHours(hours)})</h2><div class="kv">
+      <div><span class="k">ack-rate:</span>${ackPct}</div>
+      <div><span class="k">verzonden:</span>${ackC.sent ?? '—'}</div>
+      <div><span class="k">bevestigd:</span>${ackC.acked ?? '—'}</div>
+    </div>
+    <div class="note">Channels acken niet in MeshCore-protocol — alleen DMs tellen mee.</div>
+    </section>`;
+
+  // Selecteer huidige periode in de dropdown
+  const sel = $('rp-period');
+  if (sel) sel.value = String(hours);
+}
+
+function setReportPeriod(h){
+  STATE.reportPeriodHours = parseFloat(h);
+  renderReports();
+}
+
+async function renderReportRepeaters(){
+  const el = $('reports-view');
+  el.innerHTML = '<section><h2>Repeaters</h2><div class="kv">…laden…</div></section>';
+  let data;
+  try {
+    data = await api('/reports/repeaters');
+  } catch(e) { return; }
+
+  const rows = (data.repeaters || []).map(r => {
+    const lastAdv = r.last_advert
+      ? new Date(r.last_advert * 1000).toLocaleString()
+      : '—';
+    const loc = (typeof r.lat === 'number' && typeof r.lon === 'number' && (r.lat || r.lon))
+      ? r.lat.toFixed(4) + ', ' + r.lon.toFixed(4)
+      : '—';
+    const hashCell = '<code style="background:#dfeefd;padding:1px 4px;border-radius:3px">'+r.hash_1b+'</code>';
+    const opl = (r.out_path_len === -1 || r.out_path_len === 255) ? 'flood' : (r.out_path_len ?? '—');
+    return '<tr>' +
+      '<td>' + escapeHTML(r.name || '?') + '</td>' +
+      '<td>' + r.type_label + '</td>' +
+      '<td>' + hashCell + '</td>' +
+      '<td><code style="font-size:11px">' + r.pubkey_prefix + '</code></td>' +
+      '<td>' + escapeHTML(lastAdv) + '</td>' +
+      '<td>' + escapeHTML(loc) + '</td>' +
+      '<td>' + opl + '</td>' +
+      '</tr>';
+  }).join('');
+
+  el.innerHTML = `
+    <section><h2>Repeaters & Rooms (${data.count})</h2>
+      <div class="note" style="margin-bottom:8px">Bron: contactenlijst van de companion (alle nodes met type repeater of room-server).</div>
+      <table style="width:100%">
+        <thead><tr>
+          <th>Naam</th><th>Type</th><th>Hash</th><th>Pubkey-prefix</th>
+          <th>Laatste advert</th><th>Locatie</th><th>Path</th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="7" style="color:#888">geen bekende repeaters — wacht tot er adverts binnenkomen</td></tr>'}</tbody>
+      </table>
+    </section>`;
 }
 
 function renderAdminUsers(){
@@ -1031,8 +1966,16 @@ function renderDetail(){
       rows.push('<div><span class="k">hops:</span>'+fmtHops(meta.hops)+'</div>');
       signalRow = rows.join('');
     } else {
-      // Outgoing: ack-tracking komt in stap 4f
-      signalRow = '<div><span class="k">status:</span><i>verzonden</i></div>';
+      // Outgoing: ack-status + latency
+      const st = m.ack_status || 'sent';
+      const stTxt = st === 'acked' ? '✓✓ bevestigd'
+                  : st === 'failed' ? '!! mislukt'
+                  : st === 'sent' ? '✓ verzonden (geen ack)'
+                  : st;
+      signalRow = '<div><span class="k">status:</span>'+escapeHTML(stTxt)+'</div>';
+      if (typeof m.latency_s === 'number') {
+        signalRow += '<div><span class="k">ack na:</span>'+m.latency_s.toFixed(2)+' s</div>';
+      }
     }
     el.innerHTML = `
       <div class="detail-actions">
@@ -1049,9 +1992,10 @@ function renderDetail(){
       <div class="detail-section"><h3>Inhoud</h3>
         <div class="msg-quote">${escapeHTML(m._body || m.text || '')}</div>
       </div>
+      ${renderPathSection(m)}
       <div class="detail-section">
-        <h3 style="cursor:pointer" onclick="toggleRawDetail(this)">raw payload &#x25B8;</h3>
-        <div class="msg-quote" style="display:none;font-size:11px">${escapeHTML(typeof m.raw === 'string' ? m.raw : JSON.stringify(m.raw, null, 2))}</div>
+        <h3>raw payload</h3>
+        <div class="msg-quote" style="font-size:11px">${escapeHTML(typeof m.raw === 'string' ? m.raw : JSON.stringify(m.raw, null, 2))}</div>
       </div>`;
     return;
   }
@@ -1151,6 +2095,142 @@ function replyToSelected(){
   $('txt').setSelectionRange(v.length, v.length);
 }
 
+function _renderHop(seg){
+  // seg = {hash, name?} of een raw hex-string (legacy)
+  if (typeof seg === 'string') {
+    return '<span class="hop hop-unknown" title="onbekende repeater">'+escapeHTML(seg)+'</span>';
+  }
+  const hash = seg.hash || '';
+  if (seg.name) {
+    return '<span class="hop hop-known" title="'+escapeHTML(hash)+'">'+escapeHTML(seg.name)+'</span>';
+  }
+  return '<span class="hop hop-unknown" title="onbekende repeater">'+escapeHTML(hash)+'</span>';
+}
+
+function _renderOnePath(p, opts){
+  opts = opts || {};
+  const pl = p.path_len;
+  const rssi = (typeof p.rssi === 'number') ? (p.rssi+' dBm') : '?';
+  const snr  = (typeof p.snr  === 'number') ? (p.snr.toFixed(2)+' dB') : '?';
+  const summary = (pl===255?0:pl) + ' hop' + (pl===1?'':'s') + ' · ' + rssi + ' · SNR ' + snr;
+
+  // Bouw hop-chain: gebruik path_names als beschikbaar, anders ruwe path-hex
+  let chainHtml;
+  if (pl === 0 || pl === 255) {
+    chainHtml = '<i style="color:#888">direct (0 hops)</i> <span class="hop-arrow">&rarr;</span> <span class="hop hop-self">jij</span>';
+  } else if (Array.isArray(p.path_names) && p.path_names.length > 0) {
+    chainHtml = p.path_names.map(_renderHop).join('<span class="hop-arrow">&rarr;</span>') +
+                '<span class="hop-arrow">&rarr;</span><span class="hop hop-self">jij</span>';
+  } else if (typeof p.path === 'string' && p.path.length > 0) {
+    const hashSize = p.path_hash_size || 1;
+    const segs = [];
+    for (let i = 0; i + hashSize*2 <= p.path.length; i += hashSize*2) {
+      segs.push(p.path.substring(i, i+hashSize*2));
+    }
+    chainHtml = segs.map(_renderHop).join('<span class="hop-arrow">&rarr;</span>') +
+                '<span class="hop-arrow">&rarr;</span><span class="hop hop-self">jij</span>';
+  } else {
+    chainHtml = '<i style="color:#888">'+pl+' hop(s), pad-bytes niet meegestuurd</i>';
+  }
+
+  const openAttr = opts.open ? ' open' : '';
+  return '<details class="path-row"'+openAttr+'>' +
+         '<summary>'+summary+'</summary>' +
+         '<div class="hop-chain">'+chainHtml+'</div>' +
+         '</details>';
+}
+
+function renderPathSection(m){
+  if (!m || m.kind !== 'channel' || m.direction === 'out') return '';
+
+  let raw = m.raw;
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw); } catch(e) { raw = null; }
+  }
+  if (!raw || typeof raw !== 'object') {
+    return '<div class="detail-section"><h3>Pad</h3>' +
+      '<div class="kv"><div><i>geen path-info in payload</i></div></div></div>';
+  }
+
+  // Multi-path: paths-array met alle ontvangsten van dezelfde msg via
+  // verschillende routes (zoals "Heard X Times" in de Android-app).
+  if (Array.isArray(raw.paths) && raw.paths.length > 0) {
+    // Sorteer op kortste pad eerst (best signal als tie-breaker)
+    const sorted = raw.paths.slice().sort((a,b) => {
+      const al = (typeof a.path_len === 'number') ? a.path_len : 999;
+      const bl = (typeof b.path_len === 'number') ? b.path_len : 999;
+      if (al !== bl) return al - bl;
+      const sa = (typeof a.snr === 'number') ? a.snr : -999;
+      const sb = (typeof b.snr === 'number') ? b.snr : -999;
+      return sb - sa;
+    });
+    const header = sorted.length > 1
+      ? ('Paden — gehoord ' + sorted.length + 'x')
+      : 'Pad';
+    // Eerste (= kortste) standaard open, rest dicht
+    const rendered = sorted.map((p, i) => _renderOnePath(p, {open: i === 0})).join('');
+    return '<div class="detail-section"><h3>'+header+'</h3>' +
+           rendered + '</div>';
+  }
+
+  // path_len: 255 = "direct" (geen mesh-hops). Anders = aantal repeaters.
+  let pathLen = raw.path_len;
+  let directFlag = (pathLen === 255);
+  if (directFlag) pathLen = 0;
+
+  if (typeof pathLen !== 'number') {
+    return '<div class="detail-section"><h3>Pad</h3>' +
+      '<div class="kv"><div><i>path_len niet aanwezig in payload</i></div></div></div>';
+  }
+
+  if (pathLen === 0) {
+    return '<div class="detail-section"><h3>Pad</h3>' +
+      '<div class="kv"><div><i>' + (directFlag ? 'direct (geen tussen-hops)' : '0 hops') +
+      '</i></div></div></div>';
+  }
+
+  // Hash-size afleiden — eerst expliciet veld, anders uit path/path_len.
+  let hashSize = null;
+  if (typeof raw.path_hash_size === 'number' && raw.path_hash_size > 0) {
+    hashSize = raw.path_hash_size;
+  } else if (typeof raw.path_hash_mode === 'number' && raw.path_hash_mode >= 0) {
+    hashSize = raw.path_hash_mode + 1;
+  } else if (typeof raw.path === 'string' && pathLen > 0) {
+    const totalNibbles = raw.path.length;
+    if (totalNibbles % (pathLen*2) === 0) {
+      hashSize = totalNibbles / (pathLen*2);
+    }
+  }
+
+  const path = raw.path;
+  let segments;
+  let extra = '';
+  if (typeof path === 'string' && hashSize && path.length >= hashSize*2) {
+    const segs = [];
+    for (let i = 0; i + hashSize*2 <= path.length; i += hashSize*2) {
+      segs.push('<code style="background:#f0f0f0;padding:2px 4px;border-radius:3px">'+escapeHTML(path.substring(i, i+hashSize*2))+'</code>');
+    }
+    segments = segs.join(' &rarr; ') + ' &rarr; <b>jij</b>';
+    extra = '<div class="note" style="margin-top:4px">hash-size: '+hashSize+' byte(s)</div>';
+  } else if (typeof path === 'string' && path.length > 0) {
+    segments = '<code style="background:#f0f0f0;padding:2px 4px;border-radius:3px">'+escapeHTML(path)+'</code>';
+    extra = '<div class="note" style="margin-top:4px">pad-bytes ongesplitst (geen hash-size bekend)</div>';
+  } else {
+    segments = '<i>'+pathLen+' hop(s), pad-hashes niet meegestuurd</i>' +
+               '<div class="note" style="margin-top:4px">' +
+               'Tip: zorg dat decrypt-channel-logs aan staat (gateway-log toont "[*] decrypt-channel-logs aan").</div>';
+  }
+
+  let attemptInfo = '';
+  if (typeof raw.attempt === 'number') {
+    attemptInfo = '<div class="note" style="margin-top:4px">attempt: '+raw.attempt+'</div>';
+  }
+
+  return '<div class="detail-section"><h3>Pad ('+pathLen+' hop'+(pathLen===1?'':'s')+')</h3>' +
+         '<div style="font-size:11px;line-height:1.7">'+segments+'</div>' +
+         extra + attemptInfo + '</div>';
+}
+
 function toggleRawDetail(h){
   const div = h.nextElementSibling;
   if (!div) return;
@@ -1180,12 +2260,20 @@ function copySelected(){
 /* ============== refresh state ============== */
 async function refresh(){
   try {
-    const s = await api('/admin/state');
+    const [s, c, mc] = await Promise.all([
+      api('/admin/state'),
+      api('/contacts').catch(() => []),
+      api('/my/contacts').catch(() => []),
+    ]);
     STATE.status = s;
     STATE.channels = s.channels;
+    STATE.contacts = c;
+    STATE.myContacts = mc;
     renderTree();
     renderHeaderStatus();
-    if (STATE.view==='admin') renderAdmin();
+    // Bewust geen renderAdmin/Reports/Contacts hier — die rerenderen
+    // zou form-inputs wissen tijdens typen. Sub-views verversen alleen
+    // bij user-actie of bij explicit klik in tree.
     renderDetail();
   } catch(e){}
 }
@@ -1296,6 +2384,13 @@ function showNativeNotification(title, body){
 /* boot */
 loadMe().then(refresh).then(()=>{
   selectChannel({kind:'public', idx:0, name:'Public'});
+  // Filter: server-side search door alle berichten (gedebounced)
+  const fi = $('chat-filter');
+  if (fi) fi.addEventListener('input', () => {
+    STATE.filterText = fi.value.trim().toLowerCase();
+    if (_searchTimer) clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(() => runServerSearch(STATE.filterText), 300);
+  });
 });
 setInterval(refresh, 30000);          // tree/admin: 30s
 setInterval(refreshHeaderOnly, 10000); // header: 10s voor live batterij+uptime
@@ -1678,7 +2773,9 @@ refresh();
 SendChannelFn = Callable[[int, str], Awaitable[bool]]
 
 
-def setup_web(*, mc, send_channel: SendChannelFn, dispatch_obj, gateway_state, stop_event) -> tuple:
+def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
+               dispatch_obj, gateway_state, stop_event) -> tuple:
+    send_dm_fn = send_dm  # rebind voor sluiting in @sio.event
     """Bouw de ASGI-app + bezorg een hook op de dispatcher.
 
     Args:
@@ -1781,6 +2878,11 @@ def setup_web(*, mc, send_channel: SendChannelFn, dispatch_obj, gateway_state, s
     @app.get("/healthz")
     async def healthz():
         return {"ok": True, "sessions": len(_SESSIONS)}
+
+    @app.get("/reports/overview")
+    async def reports_overview(request: Request, hours: float = 24.0):
+        _auth_or_401(request)
+        return await db.reports_overview(hours=hours)
 
     @app.get("/me")
     async def me(request: Request):
@@ -1907,7 +3009,14 @@ def setup_web(*, mc, send_channel: SendChannelFn, dispatch_obj, gateway_state, s
 
     def _row_to_dict(m):
         # raw is opgeslagen als JSON-string; client parset 'm zelf
+        ack_iso = _iso_utc(m.acked_at) if m.acked_at else None
+        latency_s = None
+        if m.acked_at and m.ts:
+            ts = m.ts if m.ts.tzinfo else m.ts.replace(tzinfo=_tz.utc)
+            ak = m.acked_at if m.acked_at.tzinfo else m.acked_at.replace(tzinfo=_tz.utc)
+            latency_s = round((ak - ts).total_seconds(), 2)
         return {
+            "id": m.id,
             "ts": _iso_utc(m.ts),
             "direction": m.direction,
             "peer": m.peer or ("self" if m.direction == "out" else "?"),
@@ -1915,12 +3024,18 @@ def setup_web(*, mc, send_channel: SendChannelFn, dispatch_obj, gateway_state, s
             "kind": m.kind,
             "channel_idx": m.channel_idx,
             "raw": m.raw,
+            "ack_status": m.ack_status,
+            "acked_at": ack_iso,
+            "latency_s": latency_s,
+            "expected_ack": m.expected_ack,
         }
 
     @app.get("/channels/{idx}/history")
-    async def channel_history_endpoint(request: Request, idx: int, limit: int = 30):
+    async def channel_history_endpoint(request: Request, idx: int,
+                                        limit: int = 30,
+                                        before_id: Optional[int] = None):
         _auth_or_401(request)
-        rows = await db.channel_history(idx, limit)
+        rows = await db.channel_history(idx, limit, before_id=before_id)
         return [_row_to_dict(m) for m in rows]
 
     @app.get("/hashtags/history")
@@ -1928,6 +3043,129 @@ def setup_web(*, mc, send_channel: SendChannelFn, dispatch_obj, gateway_state, s
         _auth_or_401(request)
         rows = await db.public_history_with_tag(tag, limit)
         return [_row_to_dict(m) for m in rows]
+
+    @app.get("/dm/{peer}/history")
+    async def dm_history_endpoint(request: Request, peer: str,
+                                   limit: int = 30,
+                                   before_id: Optional[int] = None):
+        _auth_or_401(request)
+        rows = await db.dm_history(peer, limit, before_id=before_id)
+        return [_row_to_dict(m) for m in rows]
+
+    @app.get("/messages/search")
+    async def messages_search(request: Request, q: str,
+                                kind: Optional[str] = None,
+                                channel_idx: Optional[int] = None,
+                                peer: Optional[str] = None,
+                                limit: int = 100):
+        _auth_or_401(request)
+        rows = await db.search_messages(
+            q, kind=kind, channel_idx=channel_idx, peer=peer, limit=limit
+        )
+        return [_row_to_dict(m) for m in rows]
+
+    # ---------- Per-user contacts (DM-tree) ------------------------------
+
+    @app.get("/my/contacts")
+    async def my_contacts_list(request: Request):
+        s = _session_from_request(request)
+        if not s:
+            raise HTTPException(401, "not authenticated")
+        rows = await db.list_user_contacts(s["username"])
+        # Set van pubkeys die de companion kent (via mc.contacts)
+        comp_keys = {k.lower() for k in (getattr(mc, "contacts", None) or {}).keys()
+                     if isinstance(k, str)}
+        return [
+            {"pubkey": c.pubkey, "pubkey_prefix": c.pubkey[:12],
+             "name": c.name, "notes": c.notes,
+             "known_to_companion": c.pubkey.lower() in comp_keys,
+             "created_at": c.created_at.astimezone().isoformat() if c.created_at else None}
+            for c in rows
+        ]
+
+    @app.post("/my/contacts/add")
+    async def my_contacts_add(request: Request, payload: dict):
+        s = _session_from_request(request)
+        if not s:
+            raise HTTPException(401, "not authenticated")
+        name = (payload.get("name") or "").strip()
+        pubkey = (payload.get("pubkey") or "").strip()
+        if not name or not pubkey:
+            raise HTTPException(400, "name + pubkey vereist")
+        try:
+            c = await db.add_user_contact(s["username"], pubkey, name,
+                                            notes=payload.get("notes"))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "name": c.name, "pubkey": c.pubkey,
+                "message": f"contact '{c.name}' opgeslagen"}
+
+    @app.post("/my/contacts/remove")
+    async def my_contacts_remove(request: Request, payload: dict):
+        s = _session_from_request(request)
+        if not s:
+            raise HTTPException(401, "not authenticated")
+        pubkey = (payload.get("pubkey") or "").strip()
+        ok = await db.remove_user_contact(s["username"], pubkey)
+        return {"ok": ok, "message": "verwijderd" if ok else "niet gevonden"}
+
+    @app.get("/contacts")
+    async def contacts_list(request: Request):
+        _auth_or_401(request)
+        # mc.contacts is een dict van {pubkey_hex: contact_obj}
+        contacts = getattr(mc, "contacts", None) or {}
+        partners = set(await db.dm_partners())
+        items = []
+        for pk_hex, c in contacts.items():
+            if not isinstance(pk_hex, str) or not pk_hex:
+                continue
+            ctype = c.get("type") if isinstance(c, dict) else None
+            name = c.get("adv_name") if isinstance(c, dict) else None
+            items.append({
+                "pubkey": pk_hex,
+                "pubkey_prefix": pk_hex[:12],
+                "name": name or "?",
+                "type": ctype,
+                "last_advert": c.get("last_advert") if isinstance(c, dict) else None,
+                "lat": c.get("adv_lat") if isinstance(c, dict) else None,
+                "lon": c.get("adv_lon") if isinstance(c, dict) else None,
+                "out_path_len": c.get("out_path_len") if isinstance(c, dict) else None,
+                "has_dm_history": (pk_hex[:12] in partners),
+            })
+        # Sorteer: clients (type=1) eerst, dan op naam
+        def _sort_key(x):
+            t = x.get("type") if isinstance(x.get("type"), int) else 99
+            return (t, (x.get("name") or "").lower())
+        items.sort(key=_sort_key)
+        return items
+
+    @app.get("/reports/repeaters")
+    async def reports_repeaters(request: Request):
+        _auth_or_401(request)
+        contacts = getattr(mc, "contacts", None) or {}
+        items = []
+        for pk_hex, c in contacts.items():
+            if not isinstance(pk_hex, str) or not pk_hex:
+                continue
+            ctype = c.get("type") if isinstance(c, dict) else None
+            # Filter: alleen repeaters / room-servers (type 2 of 3)
+            if ctype not in (2, 3):
+                continue
+            items.append({
+                "pubkey": pk_hex,
+                "pubkey_prefix": pk_hex[:12],
+                "hash_1b":  pk_hex[:2].lower(),
+                "hash_2b":  pk_hex[:4].lower(),
+                "name": c.get("adv_name") if isinstance(c, dict) else None,
+                "type": ctype,
+                "type_label": "repeater" if ctype == 2 else "room",
+                "last_advert": c.get("last_advert") if isinstance(c, dict) else None,
+                "lat": c.get("adv_lat") if isinstance(c, dict) else None,
+                "lon": c.get("adv_lon") if isinstance(c, dict) else None,
+                "out_path_len": c.get("out_path_len") if isinstance(c, dict) else None,
+            })
+        items.sort(key=lambda x: (x["type"] or 99, (x.get("name") or "").lower()))
+        return {"count": len(items), "repeaters": items}
 
     # ---------- Hashtags --------------------------------------------------
 
@@ -1957,12 +3195,176 @@ def setup_web(*, mc, send_channel: SendChannelFn, dispatch_obj, gateway_state, s
 
     # ---------- Quit ------------------------------------------------------
 
+    # ---------- Bots (admin-only) ---------------------------------------
+
+    def _bot_to_dict(b):
+        return {
+            "id": b.id, "name": b.name, "description": b.description,
+            "channel_idx": b.channel_idx, "keyword": b.keyword,
+            "reply": b.reply, "enabled": b.enabled,
+            "created_at": b.created_at.astimezone().isoformat() if b.created_at else None,
+        }
+
+    @app.get("/admin/bots")
+    async def admin_bots_list(request: Request):
+        _admin_or_403(request)
+        return [_bot_to_dict(b) for b in await db.list_bots()]
+
+    @app.post("/admin/bots/add")
+    async def admin_bots_add(request: Request, payload: dict):
+        _admin_or_403(request)
+        try:
+            b = await db.add_bot(
+                name=payload.get("name") or "",
+                description=payload.get("description"),
+                channel_idx=int(payload.get("channel_idx", 0)),
+                keyword=payload.get("keyword") or "",
+                reply=payload.get("reply") or "",
+                enabled=bool(payload.get("enabled", True)),
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "bot": _bot_to_dict(b),
+                "message": f"bot '{b.name}' aangemaakt"}
+
+    @app.post("/admin/bots/update")
+    async def admin_bots_update(request: Request, payload: dict):
+        _admin_or_403(request)
+        try:
+            bot_id = int(payload.get("id"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "id vereist")
+        ok = await db.update_bot(bot_id, **{
+            k: payload[k] for k in
+            ("name","description","channel_idx","keyword","reply","enabled")
+            if k in payload
+        })
+        if not ok:
+            raise HTTPException(404, "bot niet gevonden")
+        return {"ok": True, "message": "bijgewerkt"}
+
+    @app.post("/admin/bots/remove")
+    async def admin_bots_remove(request: Request, payload: dict):
+        _admin_or_403(request)
+        try:
+            bot_id = int(payload.get("id"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "id vereist")
+        ok = await db.delete_bot(bot_id)
+        return {"ok": ok, "message": "verwijderd" if ok else "niet gevonden"}
+
     @app.post("/admin/quit")
     async def admin_quit(request: Request):
         _admin_or_403(request)
         # Trigger het main() stop-event — gateway sluit zichzelf netjes af.
         stop_event.set()
         return {"ok": True, "message": "afsluiten"}
+
+    # ---------- Node-voorkeuren (NodePrefs) ------------------------------
+
+    @app.get("/admin/prefs")
+    async def admin_prefs_get(request: Request):
+        _admin_or_403(request)
+        info = await _read_self_info() or {}
+        return {
+            "manual_add_contacts": bool(info.get("manual_add_contacts")),
+            "adv_loc_policy":      info.get("adv_loc_policy"),
+            "telemetry_mode_base": info.get("telemetry_mode_base"),
+            "telemetry_mode_loc":  info.get("telemetry_mode_loc"),
+            "telemetry_mode_env":  info.get("telemetry_mode_env"),
+            "multi_acks":          info.get("multi_acks"),
+        }
+
+    async def _set_one_pref(setter_name: str, value):
+        fn = _resolve_cmd(setter_name)
+        if fn is None:
+            raise HTTPException(501, f"{setter_name} niet beschikbaar")
+        try:
+            return await fn(value)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(500, f"{setter_name} faalde: {e}")
+
+    @app.post("/admin/prefs")
+    async def admin_prefs_set(request: Request, payload: dict):
+        _admin_or_403(request)
+        results = []
+        # Alleen ingestuurde keys wijzigen
+        if "manual_add_contacts" in payload:
+            r = await _set_one_pref("set_manual_add_contacts",
+                                     bool(payload["manual_add_contacts"]))
+            results.append(("manual_add_contacts", str(r)))
+        if "adv_loc_policy" in payload:
+            r = await _set_one_pref("set_advert_loc_policy",
+                                     int(payload["adv_loc_policy"]))
+            results.append(("adv_loc_policy", str(r)))
+        for k_pref, k_setter in (
+            ("telemetry_mode_base", "set_telemetry_mode_base"),
+            ("telemetry_mode_loc",  "set_telemetry_mode_loc"),
+            ("telemetry_mode_env",  "set_telemetry_mode_env"),
+        ):
+            if k_pref in payload:
+                r = await _set_one_pref(k_setter, int(payload[k_pref]))
+                results.append((k_pref, str(r)))
+        if "multi_acks" in payload:
+            r = await _set_one_pref("set_multi_acks", int(payload["multi_acks"]))
+            results.append(("multi_acks", str(r)))
+        return {"ok": True, "results": results,
+                "message": ", ".join(f"{k}={v}" for k, v in results) or "geen wijzigingen"}
+
+    # ---------- Contact-beheer -------------------------------------------
+
+    @app.post("/contacts/remove")
+    async def contacts_remove(request: Request, payload: dict):
+        _admin_or_403(request)
+        key = (payload.get("key") or "").strip()
+        if not key:
+            raise HTTPException(400, "key (pubkey hex) vereist")
+        fn = _resolve_cmd("remove_contact")
+        if fn is None:
+            raise HTTPException(501, "remove_contact niet beschikbaar")
+        try:
+            res = await fn(key)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(500, f"remove_contact faalde: {e}")
+        return {"ok": True, "result": str(res), "message": f"contact {key[:12]} verwijderd"}
+
+    @app.get("/contacts/export")
+    async def contacts_export(request: Request, key: Optional[str] = None):
+        """Geeft de hex card-data van een contact (of jezelf als key=None)."""
+        _auth_or_401(request)
+        fn = _resolve_cmd("export_contact")
+        if fn is None:
+            raise HTTPException(501, "export_contact niet beschikbaar")
+        try:
+            ev = await fn(key) if key else await fn()
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(500, f"export_contact faalde: {e}")
+        payload = getattr(ev, "payload", ev)
+        if not isinstance(payload, dict):
+            return {"ok": True, "card": str(payload)}
+        # mc kan dit als 'card' of 'data' returneren — accepteer beide
+        card = payload.get("card") or payload.get("data") or payload.get("export")
+        return {"ok": True, "card": card, "raw": payload}
+
+    @app.post("/contacts/import")
+    async def contacts_import(request: Request, payload: dict):
+        _admin_or_403(request)
+        card = (payload.get("card") or "").strip()
+        if not card:
+            raise HTTPException(400, "card (hex) vereist")
+        # Probeer hex-string, anders raw bytes
+        try:
+            card_data = bytes.fromhex(card)
+        except ValueError:
+            raise HTTPException(400, "card moet hex zijn")
+        fn = _resolve_cmd("import_contact")
+        if fn is None:
+            raise HTTPException(501, "import_contact niet beschikbaar")
+        try:
+            res = await fn(card_data)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(500, f"import_contact faalde: {e}")
+        return {"ok": True, "result": str(res), "message": "contact geïmporteerd"}
 
     # ---------- Change password (eigen) ----------------------------------
 
@@ -2236,6 +3638,20 @@ def setup_web(*, mc, send_channel: SendChannelFn, dispatch_obj, gateway_state, s
         return {"ok": True, "scope": scope,
                 "message": f"slot {slot} scope → {scope or '(geen)'}"}
 
+    @app.post("/admin/advert")
+    async def admin_advert(request: Request, payload: dict):
+        _admin_or_403(request)
+        flood = bool(payload.get("flood", False))
+        fn = _resolve_cmd("send_advert")
+        if fn is None:
+            raise HTTPException(501, "send_advert niet beschikbaar")
+        try:
+            res = await fn(flood)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(500, f"send_advert faalde: {e}")
+        kind = "flood" if flood else "zero-hop"
+        return {"ok": True, "result": str(res), "message": f"advert verzonden ({kind})"}
+
     @app.post("/admin/reboot")
     async def admin_reboot(request: Request):
         _auth_or_401(request)
@@ -2398,12 +3814,28 @@ def setup_web(*, mc, send_channel: SendChannelFn, dispatch_obj, gateway_state, s
 
     @sio.event
     async def send(sid, data):
-        text = (data or {}).get("text", "").strip()
-        idx = int((data or {}).get("channel_idx", 0))
+        data = data or {}
+        text = (data.get("text") or "").strip()
         if not text:
             return {"ok": False, "err": "leeg bericht"}
         try:
-            ok = await send_channel(idx, text)
+            if data.get("kind") == "dm":
+                peer = (data.get("peer") or "").strip()
+                if not peer:
+                    return {"ok": False, "err": "peer vereist"}
+                # Pre-check: is deze contact bekend bij de companion?
+                comp_keys = {k.lower() for k in (getattr(mc, "contacts", None) or {}).keys()
+                             if isinstance(k, str)}
+                if not any(k.startswith(peer.lower()) for k in comp_keys):
+                    return {
+                        "ok": False,
+                        "err": "Companion kent deze contact niet — wacht op een advert van die node, "
+                               "of zet 'auto-add adverts' aan in Voorkeuren."
+                    }
+                ok = await send_dm_fn(peer, text)
+            else:
+                idx = int(data.get("channel_idx", 0))
+                ok = await send_channel(idx, text)
             return {"ok": bool(ok)}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "err": str(e)}
@@ -2411,8 +3843,8 @@ def setup_web(*, mc, send_channel: SendChannelFn, dispatch_obj, gateway_state, s
     # ---------- Dispatch hook: broadcast inkomende én uitgaande ----------
 
     async def web_handler(msg) -> None:
-        # Alleen channels in deze fase; DM's komen in 4c.
-        if msg.kind != "channel":
+        # Channels én DM's worden gebroadcast naar alle web-clients
+        if msg.kind not in ("channel", "dm"):
             return
         # raw kan een dict (incoming) of een string (outgoing ack) zijn —
         # converteer naar iets dat de client kan parsen.
@@ -2426,6 +3858,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, dispatch_obj, gateway_state, s
         await sio.emit(
             "msg",
             {
+                "id": getattr(msg, "db_id", None),
                 "ts": _dt.now(_tz.utc).isoformat(),
                 "direction": msg.direction,
                 "peer": msg.sender or ("self" if msg.direction == "out" else "?"),
@@ -2433,10 +3866,20 @@ def setup_web(*, mc, send_channel: SendChannelFn, dispatch_obj, gateway_state, s
                 "kind": msg.kind,
                 "channel_idx": msg.channel_idx,
                 "raw": raw_out,
+                "ack_status": getattr(msg, "ack_status", None),
+                "expected_ack": getattr(msg, "expected_ack", None),
             },
         )
 
     dispatch_obj.register("channel", web_handler)
+    dispatch_obj.register("dm", web_handler)
+
+    async def web_update_handler(payload: dict) -> None:
+        # Broadcast ack/status-update naar alle verbonden web-clients
+        await sio.emit("msg-update", payload)
+
+    if hasattr(dispatch_obj, "register_update"):
+        dispatch_obj.register_update(web_update_handler)
 
     asgi = socketio.ASGIApp(sio, other_asgi_app=app)
     return asgi, sio

@@ -30,7 +30,12 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 # v5: + User tabel (multi-user + rollen + per-user toegestane views)
 # v6: + User.must_change_password kolom (admin geeft tijdelijk ww, user moet wijzigen)
 # v7: + Channel.scope kolom (per-kanaal flood-scope, '#regio' string of leeg)
-SCHEMA_VERSION = "7"
+# v8: + Message.expected_ack/ack_status/acked_at (ack-tracking voor outgoing)
+# v9: + UserContact tabel (per-user opgeslagen contacten)
+# v10: UserContact.pubkey is nu volledige 32-byte hex (64 chars) i.p.v. prefix.
+#      Bestaande user_contacts tabel wordt gedropt en opnieuw aangemaakt.
+# v11: + Bot tabel (admin-defined channel-bots met variable-templates)
+SCHEMA_VERSION = "11"
 
 
 # ---------------------------------------------------------------------------
@@ -65,9 +70,18 @@ class Message(Base):
     text: Mapped[str] = mapped_column(Text, default="")
     raw: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Ack-tracking voor outgoing msgs:
+    #   expected_ack = 4-byte token uit MSG_SENT (hex)
+    #   ack_status   = 'sent' | 'acked' | 'failed' (NULL voor incoming)
+    #   acked_at     = wanneer ACK ontvangen (NULL als nog niet)
+    expected_ack: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    ack_status:   Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    acked_at:     Mapped[Optional[datetime]] = mapped_column(nullable=True)
+
     __table_args__ = (
         Index("ix_msg_channel_lookup", "kind", "channel_idx", "ts"),
         Index("ix_msg_peer_lookup", "kind", "peer", "ts"),
+        Index("ix_msg_expected_ack", "expected_ack"),
     )
 
     def fmt(self) -> str:
@@ -132,6 +146,40 @@ class Hashtag(Base):
 
     name: Mapped[str] = mapped_column(String(64), primary_key=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
+class Bot(Base):
+    """Een eenvoudige channel-bot: reageert op '?<keyword>' in een specifiek
+    kanaal met een reply-template. Template kan variabelen bevatten zoals
+    {TIME}, {UPNODE}, {UPRADIO}, {HELP} — bot.py vult die bij send."""
+
+    __tablename__ = "bots"
+
+    id:          Mapped[int] = mapped_column(primary_key=True)
+    name:        Mapped[str] = mapped_column(String(64))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    channel_idx: Mapped[int] = mapped_column(Integer)
+    keyword:     Mapped[str] = mapped_column(String(64))   # zonder ?-prefix
+    reply:       Mapped[str] = mapped_column(Text)
+    enabled:     Mapped[bool] = mapped_column(default=True)
+    created_at:  Mapped[datetime] = mapped_column(default=_utcnow)
+
+
+class UserContact(Base):
+    """Opgeslagen contactpersoon per web-user. Twee verschillende web-users
+    delen geen contacten; elke user beheert zijn eigen lijst.
+
+    pubkey = volledige 32-byte hex (64 hex chars) van de contact.
+    Voor message-lookup gebruiken we de eerste 12 chars (matcht Message.peer).
+    """
+
+    __tablename__ = "user_contacts"
+
+    username:   Mapped[str] = mapped_column(String(64), primary_key=True)
+    pubkey:     Mapped[str] = mapped_column(String(64), primary_key=True)
+    name:       Mapped[str] = mapped_column(String(64), default="")
+    notes:      Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
 
@@ -277,6 +325,26 @@ async def init_db(path: str | Path = "meshcore.db") -> DBHealthReport:
                 "ALTER TABLE channels ADD COLUMN scope VARCHAR(64) DEFAULT NULL"
             ))
 
+        # v7 → v8: Message ack-tracking kolommen
+        mcols_res = await conn.execute(text("PRAGMA table_info(messages)"))
+        mcols = {r[1] for r in mcols_res.fetchall()}
+        if mcols and "expected_ack" not in mcols:
+            await conn.execute(text("ALTER TABLE messages ADD COLUMN expected_ack VARCHAR(16) DEFAULT NULL"))
+            await conn.execute(text("ALTER TABLE messages ADD COLUMN ack_status VARCHAR(8) DEFAULT NULL"))
+            await conn.execute(text("ALTER TABLE messages ADD COLUMN acked_at TIMESTAMP DEFAULT NULL"))
+
+        # v9 → v10: user_contacts.pubkey_prefix → pubkey (vol 32-byte hex).
+        # SQLite kan kolom niet hernoemen zonder migratie-overhead, dus
+        # droppen + her-create maakt 'm opnieuw met de nieuwe kolomnaam.
+        ucols_res = await conn.execute(text("PRAGMA table_info(user_contacts)"))
+        ucols2 = {r[1] for r in ucols_res.fetchall()}
+        if ucols2 and "pubkey_prefix" in ucols2 and "pubkey" not in ucols2:
+            await conn.execute(text("DROP TABLE user_contacts"))
+
+    # Nogmaals create_all om eventuele zojuist gedropte tabellen te herbouwen
+    async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
     # 4-6) schema + shutdown-flag
     async with _Session() as s:
         existing = await _get_meta(s, "schema_version")
@@ -348,6 +416,8 @@ async def save_message(
     channel_idx: Optional[int] = None,
     peer: Optional[str] = None,
     raw: Optional[Any] = None,
+    expected_ack: Optional[str] = None,
+    ack_status: Optional[str] = None,
 ) -> Message:
     """Persisteer één bericht. `raw` mag elk JSON-serializable object zijn."""
     Session = _require_session()
@@ -369,6 +439,8 @@ async def save_message(
         channel_idx=channel_idx,
         peer=peer,
         raw=raw_json,
+        expected_ack=expected_ack,
+        ack_status=ack_status,
     )
     async with Session() as s:
         s.add(msg)
@@ -382,32 +454,74 @@ async def save_message(
 # Reads
 # ---------------------------------------------------------------------------
 
-async def channel_history(channel_idx: int, limit: int = 20) -> list[Message]:
+async def channel_history(channel_idx: int, limit: int = 20,
+                           before_id: Optional[int] = None) -> list[Message]:
+    """Laatste `limit` msgs in dit kanaal, optioneel ouder dan `before_id`
+    (voor paginatie met 'laad oudere berichten')."""
     Session = _require_session()
     async with Session() as s:
-        stmt = (
-            select(Message)
-            .where(Message.kind == "channel", Message.channel_idx == channel_idx)
-            .order_by(Message.ts.desc())
-            .limit(limit)
+        stmt = select(Message).where(
+            Message.kind == "channel", Message.channel_idx == channel_idx
         )
+        if before_id is not None:
+            stmt = stmt.where(Message.id < before_id)
+        stmt = stmt.order_by(Message.ts.desc()).limit(limit)
         result = await s.execute(stmt)
         rows = list(result.scalars().all())
     return list(reversed(rows))  # oudste eerst
 
 
-async def dm_history(peer_prefix: str, limit: int = 20) -> list[Message]:
+async def dm_history(peer_prefix: str, limit: int = 20,
+                      before_id: Optional[int] = None) -> list[Message]:
     Session = _require_session()
     async with Session() as s:
-        stmt = (
-            select(Message)
-            .where(Message.kind == "dm", Message.peer == peer_prefix)
-            .order_by(Message.ts.desc())
-            .limit(limit)
+        stmt = select(Message).where(
+            Message.kind == "dm", Message.peer == peer_prefix
         )
+        if before_id is not None:
+            stmt = stmt.where(Message.id < before_id)
+        stmt = stmt.order_by(Message.ts.desc()).limit(limit)
         result = await s.execute(stmt)
         rows = list(result.scalars().all())
     return list(reversed(rows))
+
+
+async def search_messages(query: str, *, kind: Optional[str] = None,
+                            channel_idx: Optional[int] = None,
+                            peer: Optional[str] = None,
+                            limit: int = 100) -> list[Message]:
+    """Tekst-zoek in alle berichten (case-insensitive). Optioneel filter
+    op kind/channel/peer. Returnt oudste-eerst, max `limit` rijen."""
+    if not query or not query.strip():
+        return []
+    q = query.strip().lower()
+    Session = _require_session()
+    from sqlalchemy import func
+    async with Session() as s:
+        stmt = select(Message).where(func.lower(Message.text).like(f"%{q}%"))
+        if kind is not None:
+            stmt = stmt.where(Message.kind == kind)
+        if channel_idx is not None:
+            stmt = stmt.where(Message.channel_idx == channel_idx)
+        if peer is not None:
+            stmt = stmt.where(Message.peer == peer)
+        stmt = stmt.order_by(Message.ts.desc()).limit(limit)
+        result = await s.execute(stmt)
+        rows = list(result.scalars().all())
+    return list(reversed(rows))
+
+
+async def dm_partners() -> list[str]:
+    """Lijst van unieke peer-prefixes waar we DM's mee hebben gewisseld."""
+    Session = _require_session()
+    from sqlalchemy import distinct
+    async with Session() as s:
+        result = await s.execute(
+            select(distinct(Message.peer)).where(
+                Message.kind == "dm", Message.peer.isnot(None)
+            )
+        )
+        return [r[0] for r in result.all() if r[0]]
 
 
 async def count_messages() -> int:
@@ -416,6 +530,107 @@ async def count_messages() -> int:
         from sqlalchemy import func
         result = await s.execute(select(func.count()).select_from(Message))
         return int(result.scalar_one())
+
+
+async def mark_message_acked(expected_ack: str) -> Optional[Message]:
+    """Markeer een outgoing-msg als acked op basis van het 4-byte token.
+    Returnt het bijgewerkte Message of None als niet gevonden."""
+    if not expected_ack:
+        return None
+    Session = _require_session()
+    async with Session() as s:
+        result = await s.execute(
+            select(Message)
+            .where(Message.expected_ack == expected_ack, Message.ack_status != "acked")
+            .order_by(Message.ts.desc())
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+        row.ack_status = "acked"
+        row.acked_at = _utcnow()
+        await s.commit()
+        await s.refresh(row)
+    return row
+
+
+# ---------------------------------------------------------------------------
+# Rapportages: simpele aggregaties voor de Reports-pagina
+# ---------------------------------------------------------------------------
+
+async def reports_overview(hours: float = 24.0) -> dict:
+    """Overzicht: totalen, top-kanalen, ack-rate, msgs-per-bucket.
+
+    hours = lengte van de periode voor de tijdgrafiek + ack-rate.
+    De grafiek krijgt 24 buckets, ongeacht periode (bucket-grootte schaalt).
+    """
+    Session = _require_session()
+    from sqlalchemy import func
+    if hours <= 0:
+        hours = 24.0
+    now_ts = _utcnow().timestamp()
+    period_secs = int(hours * 3600)
+    cutoff_period = datetime.fromtimestamp(now_ts - period_secs, tz=timezone.utc)
+    cutoff_24h    = datetime.fromtimestamp(now_ts - 86400, tz=timezone.utc)
+    cutoff_7d     = datetime.fromtimestamp(now_ts - 7*86400, tz=timezone.utc)
+    async with Session() as s:
+        total      = (await s.execute(select(func.count()).select_from(Message))).scalar_one()
+        last_24h   = (await s.execute(
+            select(func.count()).select_from(Message).where(Message.ts >= cutoff_24h))).scalar_one()
+        last_7d    = (await s.execute(
+            select(func.count()).select_from(Message).where(Message.ts >= cutoff_7d))).scalar_one()
+
+        # Top-5 kanalen op msg-volume in laatste 7 dagen
+        top_chan_q = (
+            select(Message.channel_idx, func.count().label("n"))
+            .where(Message.kind == "channel", Message.ts >= cutoff_7d)
+            .group_by(Message.channel_idx)
+            .order_by(func.count().desc())
+            .limit(5)
+        )
+        top_channels = [
+            {"channel_idx": r[0], "count": int(r[1])}
+            for r in (await s.execute(top_chan_q)).all()
+        ]
+
+        # Ack-rate (DM only; channels acken niet) over de periode
+        out_total_q = select(func.count()).select_from(Message).where(
+            Message.kind == "dm", Message.direction == "out", Message.ts >= cutoff_period)
+        out_acked_q = select(func.count()).select_from(Message).where(
+            Message.kind == "dm", Message.direction == "out", Message.ts >= cutoff_period,
+            Message.ack_status == "acked")
+        out_total = (await s.execute(out_total_q)).scalar_one()
+        out_acked = (await s.execute(out_acked_q)).scalar_one()
+        ack_rate = (out_acked / out_total) if out_total else None
+
+        # Berichten-per-bucket
+        ts_q = select(Message.ts).where(Message.ts >= cutoff_period)
+        ts_rows = (await s.execute(ts_q)).scalars().all()
+
+    # 24 buckets over de gekozen periode
+    n_buckets = 24
+    bucket_secs = period_secs / n_buckets
+    buckets = [0] * n_buckets
+    now = _utcnow()
+    for ts in ts_rows:
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        delta_s = (now - ts).total_seconds()
+        idx = int(delta_s // bucket_secs)
+        if 0 <= idx < n_buckets:
+            buckets[n_buckets - 1 - idx] += 1
+
+    return {
+        "totals": {"total": int(total), "last_24h": int(last_24h), "last_7d": int(last_7d)},
+        "top_channels": top_channels,
+        "ack_rate": round(ack_rate, 3) if ack_rate is not None else None,
+        "ack_count": {"sent": int(out_total), "acked": int(out_acked)},
+        "buckets": buckets,
+        "period_hours": hours,
+        "bucket_secs": int(bucket_secs),
+        "n_buckets": n_buckets,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -725,6 +940,139 @@ async def delete_user(username: str) -> bool:
         if u is None:
             return False
         await s.delete(u)
+        await s.commit()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Bots
+# ---------------------------------------------------------------------------
+
+def _normalize_keyword(k: str) -> str:
+    k = (k or "").strip().lower().lstrip("?")
+    return k
+
+
+async def list_bots(*, only_enabled: bool = False) -> list[Bot]:
+    Session = _require_session()
+    async with Session() as s:
+        stmt = select(Bot)
+        if only_enabled:
+            stmt = stmt.where(Bot.enabled == True)  # noqa: E712
+        stmt = stmt.order_by(Bot.channel_idx, Bot.keyword)
+        result = await s.execute(stmt)
+        return list(result.scalars().all())
+
+
+async def get_bot(bot_id: int) -> Optional[Bot]:
+    Session = _require_session()
+    async with Session() as s:
+        return await s.get(Bot, bot_id)
+
+
+async def add_bot(*, name: str, channel_idx: int, keyword: str, reply: str,
+                   description: Optional[str] = None,
+                   enabled: bool = True) -> Bot:
+    if not name or not name.strip():
+        raise ValueError("name vereist")
+    keyword = _normalize_keyword(keyword)
+    if not keyword:
+        raise ValueError("keyword vereist")
+    if not reply or not reply.strip():
+        raise ValueError("reply vereist")
+    Session = _require_session()
+    async with Session() as s:
+        b = Bot(name=name.strip(), description=description,
+                channel_idx=int(channel_idx),
+                keyword=keyword, reply=reply,
+                enabled=bool(enabled))
+        s.add(b)
+        await s.commit()
+        await s.refresh(b)
+    return b
+
+
+async def update_bot(bot_id: int, **fields) -> bool:
+    Session = _require_session()
+    async with Session() as s:
+        b = await s.get(Bot, bot_id)
+        if b is None:
+            return False
+        if "name" in fields:        b.name = (fields["name"] or "").strip() or b.name
+        if "description" in fields: b.description = fields["description"]
+        if "channel_idx" in fields: b.channel_idx = int(fields["channel_idx"])
+        if "keyword" in fields:
+            kw = _normalize_keyword(fields["keyword"])
+            if kw: b.keyword = kw
+        if "reply" in fields and fields["reply"]:        b.reply = fields["reply"]
+        if "enabled" in fields:     b.enabled = bool(fields["enabled"])
+        await s.commit()
+    return True
+
+
+async def delete_bot(bot_id: int) -> bool:
+    Session = _require_session()
+    async with Session() as s:
+        b = await s.get(Bot, bot_id)
+        if b is None:
+            return False
+        await s.delete(b)
+        await s.commit()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# User-contacts
+# ---------------------------------------------------------------------------
+
+async def list_user_contacts(username: str) -> list[UserContact]:
+    Session = _require_session()
+    async with Session() as s:
+        result = await s.execute(
+            select(UserContact)
+            .where(UserContact.username == username)
+            .order_by(UserContact.name)
+        )
+        return list(result.scalars().all())
+
+
+async def add_user_contact(username: str, pubkey: str,
+                            name: str, notes: Optional[str] = None) -> UserContact:
+    """pubkey = volledige 32-byte hex (64 hex chars)."""
+    Session = _require_session()
+    pubkey = pubkey.strip().lower()
+    if not pubkey:
+        raise ValueError("pubkey vereist")
+    if len(pubkey) != 64:
+        raise ValueError(f"pubkey moet 64 hex chars (32 bytes) zijn, kreeg {len(pubkey)}")
+    try:
+        bytes.fromhex(pubkey)
+    except ValueError:
+        raise ValueError("pubkey moet hex zijn")
+    async with Session() as s:
+        existing = await s.get(UserContact, (username, pubkey))
+        if existing is not None:
+            existing.name = name
+            if notes is not None:
+                existing.notes = notes
+            await s.commit()
+            await s.refresh(existing)
+            return existing
+        c = UserContact(username=username, pubkey=pubkey, name=name, notes=notes)
+        s.add(c)
+        await s.commit()
+        await s.refresh(c)
+    return c
+
+
+async def remove_user_contact(username: str, pubkey: str) -> bool:
+    Session = _require_session()
+    pubkey = pubkey.strip().lower()
+    async with Session() as s:
+        c = await s.get(UserContact, (username, pubkey))
+        if c is None:
+            return False
+        await s.delete(c)
         await s.commit()
     return True
 

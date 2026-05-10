@@ -103,15 +103,20 @@ class Message:
     onafhankelijk van de exacte meshcore-py event payload.
     Dispatch-handlers werken hierop, dus print/db/web allemaal dezelfde flow."""
 
-    __slots__ = ("direction", "kind", "channel_idx", "sender", "text", "raw")
+    __slots__ = ("direction", "kind", "channel_idx", "sender", "text", "raw",
+                 "expected_ack", "ack_status", "db_id")
 
-    def __init__(self, direction: str, kind: str, channel_idx, sender, text, raw=None):
-        self.direction = direction        # "in" | "out"
-        self.kind = kind                  # "dm" | "channel"
-        self.channel_idx = channel_idx    # int | None
-        self.sender = sender              # str | None  (pubkey_prefix; bij out-channel: 'self')
-        self.text = text                  # str
-        self.raw = raw                    # original payload dict (None voor out)
+    def __init__(self, direction: str, kind: str, channel_idx, sender, text, raw=None,
+                 expected_ack=None, ack_status=None):
+        self.direction = direction
+        self.kind = kind
+        self.channel_idx = channel_idx
+        self.sender = sender
+        self.text = text
+        self.raw = raw
+        self.expected_ack = expected_ack   # 4-byte hex token, alleen voor outgoing
+        self.ack_status = ack_status       # 'sent' | 'acked' | None
+        self.db_id = None                  # gevuld door db_handler na opslag
 
 
 # Backward-compat alias voor bestaande imports
@@ -120,10 +125,14 @@ IncomingMessage = Message
 
 class Dispatch:
     """Eenvoudige fan-out: registreer N handlers per message-kind, fire 'm
-    één voor één. Een falende handler stopt de andere niet."""
+    één voor één. Een falende handler stopt de andere niet.
+
+    Naast Message-events ook meta-updates (bv ack-status van een verzonden
+    bericht) via register_update / fire_update."""
 
     def __init__(self):
         self._handlers: dict[str, list] = {"dm": [], "channel": []}
+        self._update_handlers: list = []
 
     def register(self, kind: str, handler) -> None:
         self._handlers.setdefault(kind, []).append(handler)
@@ -135,6 +144,17 @@ class Dispatch:
             except Exception as e:  # noqa: BLE001
                 name = getattr(h, "__name__", repr(h))
                 print(f"\r[!] handler {name} faalde: {e}\n> ", end="", flush=True)
+
+    def register_update(self, handler) -> None:
+        self._update_handlers.append(handler)
+
+    async def fire_update(self, payload: dict) -> None:
+        for h in list(self._update_handlers):
+            try:
+                await h(payload)
+            except Exception as e:  # noqa: BLE001
+                name = getattr(h, "__name__", repr(h))
+                print(f"\r[!] update handler {name} faalde: {e}\n> ", end="", flush=True)
 
 
 # Singleton dispatcher voor deze proces-instantie
@@ -157,14 +177,17 @@ async def print_handler(msg: Message) -> None:
 
 async def db_handler(msg: Message) -> None:
     try:
-        await db.save_message(
+        saved = await db.save_message(
             direction=msg.direction,
             kind=msg.kind,
             text=str(msg.text),
             channel_idx=msg.channel_idx,
             peer=msg.sender,
             raw=msg.raw,
+            expected_ack=msg.expected_ack,
+            ack_status=msg.ack_status,
         )
+        msg.db_id = saved.id  # opdat web_handler de id kan meesturen
     except Exception as e:  # noqa: BLE001
         print(f"\r[!] db save ({msg.kind} {msg.direction}) faalde: {e}\n> ", end="", flush=True)
 
@@ -195,13 +218,22 @@ async def on_channel_msg(event):
         idx = chan
     else:
         idx = None
+
+    # Enrich payload met path/RSSI/SNR uit RX_LOG_DATA ring-buffer.
+    raw_payload = _payload(event)
+    if isinstance(raw_payload, dict):
+        enriched = dict(raw_payload)
+        _enrich_with_rxlog(enriched)
+    else:
+        enriched = raw_payload
+
     msg = Message(
         direction="in",
         kind="channel",
         channel_idx=idx,
         sender=str(sender) if sender and sender != "?" else None,
         text=str(text),
-        raw=_payload(event),
+        raw=enriched,
     )
     await dispatch.fire(msg)
 
@@ -212,47 +244,24 @@ async def on_channel_msg(event):
 
 HELP = """\
 Berichten:
-  <tekst>                       stuur naar Public channel (idx 0)
-  /c <slot> <tekst>             stuur naar specifiek channel-slot
-  /dm <prefix> <tekst>          directe boodschap (pubkey-prefix, hex)
-  /history [n]                  laatste n berichten van Public (default 20)
-  /history dm <prefix> [n]      laatste n DM's met die contact
+  <tekst>                  stuur naar Public channel
+  /dm <prefix> <tekst>     directe boodschap (pubkey-prefix, hex)
+  /history [n]             laatste n berichten van Public
 
 Status:
-  /info                         herlees node-info
-  /bat                          batterijstatus
-  /poll                         handmatig nieuwe berichten ophalen
+  /info                    node-info
+  /bat                     batterijstatus
+  /poll                    handmatig msgs ophalen
 
-Channels:
-  /channels [show]              toon channels (uit DB)
-  /channels add <slot> <naam> [hex-key]
-                                voeg channel toe (slot 1-7); zonder key = nieuwe random key
-  /channels remove <slot>       verwijder uit DB-metadata
-  /channels alias <slot> <naam> alias voor lokaal gebruik
-
-Admin (radio / node):
-  /radio [show]                 toon huidige radio-instellingen
-  /radio set <freq> <bw> <sf> <cr>   alle modulatie-params tegelijk
-  /radio freq|bw|sf|cr <waarde> één parameter; rest blijft
-  /radio txpower <dBm>          tx-vermogen
-  /name <nieuwe-naam>           verander adv-naam
-  /coords show | clear | <lat> <lon>
-  /advert-policy <0|1|2|3>      adv-locatie-beleid (firmware-afhankelijk)
-  /reboot                       reboot de companion (vereist na set_radio/txpower)
-  /identity | /region | /pathhash   (zie uitleg in CLI)
-
-Housekeeping:
-  /clean older-than <30d|24h|...>  verwijder oude berichten
-  /clean all                    verwijder alle berichten
-  /vacuum                       compacteer DB-bestand
-
-Web users:
-  /users                        toon alle web-gebruikers
-  /reset-admin                  wis alle admin-accounts (eerste /setup opnieuw)
+Web-gebruikers:
+  /users                   toon web-gebruikers
+  /reset-admin             wis admin-accounts (eerste /setup opnieuw)
 
 Algemeen:
-  /help                         deze help
-  /quit                         stoppen
+  /help                    deze help
+  /quit                    stoppen
+
+Tip: alle admin/channels/housekeeping zit in de Web UI.
 """
 
 
@@ -361,6 +370,16 @@ async def send_and_dispatch(mc, *, kind: str, text: str,
         print(f"\r[!] verzenden mislukt: {e}\n> ", end="", flush=True)
         return False
 
+    # Pak expected_ack-token uit MSG_SENT response (4 bytes hex)
+    expected_ack = None
+    try:
+        payload = getattr(res, "payload", None)
+        if isinstance(payload, dict) and "expected_ack" in payload:
+            ea = payload["expected_ack"]
+            expected_ack = ea.hex() if isinstance(ea, (bytes, bytearray)) else str(ea)
+    except Exception:  # noqa: BLE001
+        pass
+
     msg = Message(
         direction="out",
         kind=kind,
@@ -368,8 +387,17 @@ async def send_and_dispatch(mc, *, kind: str, text: str,
         sender=sender_label,
         text=text,
         raw=str(res),
+        expected_ack=expected_ack,
+        ack_status=("sent" if expected_ack else "sent"),
     )
     await dispatch.fire(msg)
+    # Voor channel-sends: registreer voor implicit-ACK detectie via RX_LOG
+    if kind == "channel" and msg.db_id is not None:
+        _pending_repeats.append({
+            "db_id": msg.db_id,
+            "ts": _time.time(),
+            "channel_idx": channel_idx,
+        })
     return True
 
 
@@ -383,8 +411,250 @@ async def _on_any_event(event):
     print(f"\r[ev {name}] {payload}\n> ", end="", flush=True)
 
 
+# ---- RX_LOG_DATA enrichment ----
+# meshcore-py's decrypt_channels-koppeling werkt niet (zoekt op msg_hash dat
+# niet in channels_log gepushed wordt). We doen 't zelf via een ring-buffer
+# van recente RX_LOG_DATA entries. Bij elke channel-msg pakken we de beste
+# match (laagste path_len, binnen 10s).
+
+import time as _time
+from collections import deque as _deque
+
+_recent_rxlogs: _deque = _deque(maxlen=200)
+
+# Pending outgoing channel-msgs voor implicit-ACK detectie.
+# Channel-msgs hebben geen protocol-ack; we detecteren 'mesh-pickup' door
+# tijd-correlatie met inkomende RX_LOG_DATA (GRP_TXT) van repeaters.
+# Element: {"db_id": int, "ts": float, "channel_idx": int}
+_pending_repeats: list = []
+
+
+# Lookup van pubkey-prefix → adv_name voor repeater-naam-resolving in
+# path-visualisatie. Wordt periodiek bijgewerkt vanuit mc.contacts.
+# Sleutels worden voor meerdere prefix-lengtes (2/4/6/8 hex chars = 1/2/3/4 bytes)
+# opgeslagen zodat path_hash_size 1-4 allemaal werken.
+_known_repeaters: dict[str, str] = {}
+
+
+async def refresh_repeater_cache(mc) -> None:
+    """Refresh _known_repeaters uit mc.contacts.
+    Roept get_contacts() aan om de cache up-to-date te houden."""
+    cmds = getattr(mc, "commands", None)
+    if cmds is None:
+        return
+    fn = getattr(cmds, "get_contacts", None)
+    if fn is not None:
+        try:
+            await asyncio.wait_for(fn(), timeout=8.0)
+        except Exception:  # noqa: BLE001
+            pass  # cache blijft oude waardes — beter dan crash
+    contacts = getattr(mc, "contacts", None)
+    if not isinstance(contacts, dict):
+        return
+    new_lookup: dict[str, str] = {}
+    for pk_hex, c in contacts.items():
+        if not isinstance(pk_hex, str) or not pk_hex:
+            continue
+        name = c.get("adv_name") if isinstance(c, dict) else None
+        if not name:
+            continue
+        for hex_chars in (2, 4, 6, 8):  # 1, 2, 3, 4 byte prefixes
+            if len(pk_hex) >= hex_chars:
+                key = pk_hex[:hex_chars].lower()
+                # Conflict resolution: kortere prefix kan dubbelen tussen
+                # verschillende repeaters; bij collision behoudt de laatste
+                # wins. Voor 1-byte prefixes is dat onvermijdelijk.
+                new_lookup[key] = str(name)
+    _known_repeaters.clear()
+    _known_repeaters.update(new_lookup)
+
+
+async def repeater_cache_loop(mc, stop: asyncio.Event) -> None:
+    """Periodiek (elke 5 min) de repeater-cache verversen."""
+    await refresh_repeater_cache(mc)
+    print(f"[*] repeater-cache: {len(_known_repeaters)} prefixes geladen")
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=300.0)
+            return
+        except asyncio.TimeoutError:
+            pass
+        try:
+            await refresh_repeater_cache(mc)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _resolve_path_hashes(path_hex: str, hash_size: int) -> list[dict]:
+    """Split een path-hex string in hops en resolve elke hop naar
+    {'hash': '6c', 'name': 'NL-020-Involver/RPT2'} (name=None als onbekend)."""
+    if not isinstance(path_hex, str) or not path_hex:
+        return []
+    hash_size = hash_size if isinstance(hash_size, int) and hash_size > 0 else 1
+    n = hash_size * 2  # hex chars per hop
+    out = []
+    for i in range(0, len(path_hex), n):
+        seg = path_hex[i:i + n].lower()
+        if len(seg) != n:
+            break
+        out.append({"hash": seg, "name": _known_repeaters.get(seg)})
+    return out
+
+
+async def on_rx_log_event(event):
+    payload = getattr(event, "payload", None)
+    if not isinstance(payload, dict):
+        return
+    # Alleen GRP_TXT-payload-type heeft betekenis voor channel-msg-enrichment
+    if payload.get("payload_typename") != "GRP_TXT":
+        return
+    now = _time.time()
+    _recent_rxlogs.append({
+        "ts": now,
+        "pkt_hash":       payload.get("pkt_hash"),
+        "chan_hash":      payload.get("chan_hash"),
+        "path":           payload.get("path"),
+        "path_len":       payload.get("path_len"),
+        "path_hash_size": payload.get("path_hash_size"),
+        "rssi":           payload.get("rssi"),
+        "snr":            payload.get("snr"),
+    })
+
+    # Implicit-ACK voor outgoing channel-msgs: een RX_LOG met path_len > 0
+    # betekent dat een repeater het bericht doorgaf. Match op tijd met onze
+    # pending outgoing-msgs (binnen 60s, pak oudste).
+    pl = payload.get("path_len")
+    if not isinstance(pl, int) or pl == 0 or pl == 255:
+        return
+    # Cleanup te oude pending-entries
+    cutoff = now - 60.0
+    while _pending_repeats and _pending_repeats[0]["ts"] < cutoff:
+        _pending_repeats.pop(0)
+    if not _pending_repeats:
+        return
+    pending = _pending_repeats.pop(0)
+    try:
+        msg = await db.mark_message_acked  # placeholder; we doen 't manueel
+    except Exception:
+        msg = None
+    # Update direct via db.set_user_password_hash-stijl helper:
+    try:
+        ok = await _mark_repeated(pending["db_id"])
+        if ok:
+            await dispatch.fire_update({
+                "type": "repeated",
+                "msg_id": pending["db_id"],
+                "ack_status": "repeated",
+                "via_path_len": pl,
+                "snr": payload.get("snr"),
+                "rssi": payload.get("rssi"),
+            })
+    except Exception:
+        pass
+
+
+async def _mark_repeated(msg_id: int) -> bool:
+    """Markeer een outgoing-channel-msg als 'opgepikt door mesh-repeater'."""
+    Session = db._require_session()
+    async with Session() as s:
+        m = await s.get(db.Message, msg_id)
+        if m is None:
+            return False
+        if m.ack_status == "acked":  # ack heeft prioriteit
+            return False
+        m.ack_status = "repeated"
+        await s.commit()
+    return True
+
+
+def _enrich_with_rxlog(payload: dict) -> None:
+    """Voeg path/RSSI/SNR/paths toe aan een channel-msg payload.
+
+    Een bericht kan via meerdere paden binnenkomen (de Android-app toont
+    "Heard X Times"). We groeperen op `pkt_hash` om alle ontvangsten
+    van hetzelfde bericht te clusteren. De meest recente entry geeft ons
+    de pkt_hash van de net-binnengekomen msg.
+    """
+    if not isinstance(payload, dict):
+        return
+    now = _time.time()
+    recent = [r for r in _recent_rxlogs if now - r["ts"] <= 15.0]
+    if not recent:
+        return
+
+    # Aanname: meest recente entry hoort bij deze net-gedecodeerde msg
+    latest = recent[-1]
+    target = latest.get("pkt_hash")
+    if target is None:
+        same = [latest]
+    else:
+        same = [r for r in recent if r.get("pkt_hash") == target]
+
+    # Sla alle paden op (voor multi-path detail in UI), incl. naam-resolution
+    paths_out = []
+    for r in same:
+        p = {
+            "path":           r.get("path"),
+            "path_len":       r.get("path_len"),
+            "path_hash_size": r.get("path_hash_size"),
+            "rssi":           r.get("rssi"),
+            "snr":            r.get("snr"),
+            "ts":             r.get("ts"),
+        }
+        p["path_names"] = _resolve_path_hashes(p["path"] or "", p["path_hash_size"] or 1)
+        paths_out.append(p)
+    payload["paths"] = paths_out
+
+    # Primary indicator: kortste pad eerst, daarbinnen sterkste SNR
+    def _score(r):
+        pl = r.get("path_len") if isinstance(r.get("path_len"), int) else 999
+        sn = r.get("snr")      if isinstance(r.get("snr"),  (int, float)) else -999
+        return (pl, -sn)
+
+    best = min(same, key=_score)
+    if best.get("path") is not None:           payload["path"] = best["path"]
+    if best.get("path_len") is not None:       payload["path_len"] = best["path_len"]
+    if best.get("path_hash_size") is not None: payload["path_hash_size"] = best["path_hash_size"]
+    if best.get("rssi") is not None:           payload["RSSI"] = best["rssi"]
+    if best.get("snr") is not None:            payload["SNR"]  = best["snr"]
+
+
+async def on_ack_event(event):
+    """Wordt aangeroepen bij elke binnenkomende ACK; matched de 4-byte
+    code aan een eerder verzonden msg via Message.expected_ack."""
+    payload = getattr(event, "payload", None)
+    if not isinstance(payload, dict):
+        return
+    code = payload.get("code")
+    if isinstance(code, (bytes, bytearray)):
+        code = code.hex()
+    if not code:
+        return
+    msg = await db.mark_message_acked(str(code))
+    if msg is None:
+        return
+    # Latency: ts is UTC, acked_at idem
+    ts = msg.ts
+    if ts.tzinfo is None:
+        from datetime import timezone as _tz
+        ts = ts.replace(tzinfo=_tz.utc)
+    acked = msg.acked_at
+    if acked.tzinfo is None:
+        from datetime import timezone as _tz
+        acked = acked.replace(tzinfo=_tz.utc)
+    latency_s = (acked - ts).total_seconds()
+    await dispatch.fire_update({
+        "type": "ack",
+        "msg_id": msg.id,
+        "ack_status": "acked",
+        "acked_at": acked.isoformat(),
+        "latency_s": round(latency_s, 2),
+        "expected_ack": code,
+    })
+
+
 def subscribe_messages(mc) -> None:
-    """Hang event handlers aan inkomende DM- en kanaal-berichten."""
+    """Hang event handlers aan inkomende DM- en kanaal-berichten + ACK."""
     if EventType is None:
         print("[!] EventType niet beschikbaar in deze meshcore versie; "
               "inkomende berichten worden mogelijk niet getoond.")
@@ -393,9 +663,10 @@ def subscribe_messages(mc) -> None:
     candidates = [
         ("CONTACT_MSG_RECV", on_contact_msg),
         ("CHANNEL_MSG_RECV", on_channel_msg),
-        # alternatieve namen die in oudere/nieuwere versies voorkomen
         ("MSG_RECV", on_contact_msg),
         ("CHANNEL_MSG", on_channel_msg),
+        ("ACK", on_ack_event),
+        ("RX_LOG_DATA", on_rx_log_event),
     ]
     seen = set()
     for name, handler in candidates:
@@ -408,17 +679,19 @@ def subscribe_messages(mc) -> None:
                 print(f"[!] subscribe({name}) faalde: {e}")
 
     # Debug: subscribe op ALLE event-types zodat we kunnen zien welke namen
-    # de companion echt vuurt. Activeer met MESHCORE_DEBUG=1.
+    # de companion echt vuurt. Activeer met MESHCORE_DEBUG=1. We subscriben
+    # bewust óók op events die al een specifieke handler hebben — geen
+    # interferentie, beide handlers worden los aangeroepen.
     if DEBUG_EVENTS:
         try:
+            n = 0
             for et in list(EventType):  # type: ignore[arg-type]
-                if et in seen:
-                    continue
                 try:
                     mc.subscribe(et, _on_any_event)
+                    n += 1
                 except Exception:  # noqa: BLE001
                     pass
-            print("[debug] subscribed op alle EventType-leden")
+            print(f"[debug] _on_any_event op {n} EventType-leden gehookt")
         except TypeError:
             pass
 
@@ -1013,52 +1286,16 @@ async def cli_loop(mc) -> None:
             await handle_history(line)
             continue
 
-        # ---- Phase 3: admin / channels / housekeeping ------------------
+        # CLI is bewust minimaal — admin/channels/housekeeping zit in de Web UI.
         parts = line.split()
         head = parts[0]
         rest = parts[1:]
 
-        if head == "/radio":
-            await cmd_radio(mc, rest)
-            continue
-        if head == "/name" and rest:
-            await cmd_set_name(mc, " ".join(rest))
-            continue
-        if head == "/coords":
-            await cmd_set_coords(mc, rest)
-            continue
-        if head == "/advert-policy":
-            await cmd_advert_policy(mc, rest)
-            continue
-        if head == "/reboot":
-            await cmd_reboot(mc)
-            continue
-        if head == "/channels":
-            await cmd_channels(mc, rest)
-            continue
-        if head == "/c" and len(rest) >= 2:
-            try:
-                slot = int(rest[0])
-            except ValueError:
-                print("Gebruik: /c <slot> <tekst>")
-                continue
-            text = " ".join(rest[1:])
-            await send_and_dispatch(mc, kind="channel", channel_idx=slot, text=text)
-            continue
-        if head == "/clean":
-            await cmd_clean(rest)
-            continue
-        if head == "/vacuum":
-            await cmd_vacuum()
-            continue
         if head == "/reset-admin":
             await cmd_reset_admin()
             continue
         if head == "/users":
             await cmd_list_users()
-            continue
-        if head in NOT_SUPPORTED_MSG:
-            print(NOT_SUPPORTED_MSG[head])
             continue
 
         if line.startswith("/dm "):
@@ -1254,6 +1491,18 @@ async def main() -> int:
     await print_status(mc)
     await load_self_info(mc)
 
+    # Zet decrypt-channel-logs aan: koppelt RX_LOG_DATA (raw RF-metadata)
+    # aan inkomende channel-msgs zodat 'path', 'RSSI', 'SNR' en 'attempt'
+    # in de payload verschijnen. Werkt alleen voor channels die we kennen
+    # (slot+key). Zonder deze toggle is path-info volledig afwezig.
+    enable_fn = getattr(mc, "set_decrypt_channel_logs", None)
+    if callable(enable_fn):
+        try:
+            enable_fn(True)
+            print("[*] decrypt-channel-logs aan (path/RSSI/SNR per bericht)")
+        except Exception as e:  # noqa: BLE001
+            print(f"[!] decrypt-channel-logs aanzetten faalde: {e}")
+
     # registreer de built-in handlers op de dispatcher
     for kind in ("dm", "channel"):
         dispatch.register(kind, print_handler)
@@ -1283,6 +1532,7 @@ async def main() -> int:
     cli_task = asyncio.create_task(cli_loop(mc))
     stop_task = asyncio.create_task(stop.wait())
     wd_task = asyncio.create_task(watchdog(mc, stop))
+    rc_task = asyncio.create_task(repeater_cache_loop(mc, stop))
 
     # Webserver — aan tenzij expliciet uitgezet met MESHCORE_WEB=0.
     web_task: Optional[asyncio.Task] = None
@@ -1293,6 +1543,9 @@ async def main() -> int:
                 mc=mc,
                 send_channel=lambda idx, text: send_and_dispatch(
                     mc, kind="channel", channel_idx=idx, text=text
+                ),
+                send_dm=lambda peer, text: send_and_dispatch(
+                    mc, kind="dm", peer=peer, text=text
                 ),
                 dispatch_obj=dispatch,
                 gateway_state=state,
@@ -1310,24 +1563,24 @@ async def main() -> int:
     else:
         print("[*] web UI uit (MESHCORE_WEB=0)")
 
-    # Bot — alleen als BOT_CHANNELS gezet is
-    if os.environ.get("BOT_CHANNELS"):
-        try:
-            import bot as bot_mod
-            bot_handler = bot_mod.setup_bot(
-                send_channel=lambda idx, text: send_and_dispatch(
-                    mc, kind="channel", channel_idx=idx, text=text
-                ),
-                send_dm=lambda peer, text: send_and_dispatch(
-                    mc, kind="dm", peer=peer, text=text
-                ),
-                gateway_state=state,
-            )
-            dispatch.register("dm", bot_handler)
-            dispatch.register("channel", bot_handler)
-            print(f"[*] bot actief voor channels: {os.environ['BOT_CHANNELS']}")
-        except Exception as e:  # noqa: BLE001
-            print(f"[!] bot niet gestart: {e}")
+    # Bots — DB-driven (admin definieert in Web UI). Altijd aan; als geen
+    # bots zijn gedefinieerd doet 'ie simpelweg niets.
+    try:
+        import time as _t
+        import bot as bot_mod
+        bot_handler = bot_mod.setup_bot(
+            mc=mc,
+            send_channel=lambda idx, text: send_and_dispatch(
+                mc, kind="channel", channel_idx=idx, text=text
+            ),
+            gateway_started_at=_t.time(),
+            self_pubkey=getattr(state, "self_pubkey", None),
+            gateway_state=state,
+        )
+        dispatch.register("channel", bot_handler)
+        print("[*] bot-framework actief — definieer bots in Admin → Bots")
+    except Exception as e:  # noqa: BLE001
+        print(f"[!] bot-framework niet gestart: {e}")
 
     await asyncio.wait({cli_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
 
@@ -1346,8 +1599,8 @@ async def main() -> int:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
 
-    # CLI-task en watchdog wel cancellen — die wachten op input/sleep.
-    for t in (cli_task, wd_task):
+    # CLI-task, watchdog, repeater-cache wel cancellen
+    for t in (cli_task, wd_task, rc_task):
         if not t.done():
             t.cancel()
             try:
