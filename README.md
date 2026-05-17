@@ -1,4 +1,4 @@
-# MeshCore Gateway
+# MeshCore Gateway Web Client
 
 Een desktop/Pi-gateway voor [MeshCore](https://meshcore.co.nz/) LoRa-mesh — verbindt een via USB aangesloten companion-radio met een eenvoudige web-interface (en CLI), zodat je vanaf elk apparaat in je netwerk kunt meelezen en mee-praten op het mesh.
 
@@ -93,6 +93,180 @@ Open dan `http://<pi-ip>:8080/` op je telefoon/tablet/laptop.
 ### 5. Stoppen
 
 `Ctrl-C` in de terminal (of het commando /quit), of in de browser via avatar-menu → "Quit (gateway stoppen)" (admin-only).
+
+---
+
+## Container (Docker / docker-compose)
+
+Het project is gecontaineriseerd voor makkelijke deployment op een Pi. **USB-passthrough werkt alleen op Linux-hosts** (Pi, Linux-PC). macOS/Windows-Docker-desktop hosten geen USB door — daar moet je de gateway native draaien.
+
+### Snel starten met docker-compose
+
+```bash
+# Eenmalig: bouw + start
+docker compose up -d --build
+
+# Logs volgen
+docker compose logs -f
+
+# Stoppen
+docker compose down
+```
+
+De gateway is dan bereikbaar op `http://<host-ip>:8080/`. De DB staat in `./data/meshcore.db` (host-volume).
+
+### Manual `docker run`
+
+```bash
+docker build -t meshcore-gateway .
+
+docker run -d \
+  --name meshcore-gateway \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  --device /dev/ttyACM0:/dev/ttyACM0 \
+  -v "$(pwd)/data:/data" \
+  -e MESHCORE_PORT=/dev/ttyACM0 \
+  meshcore-gateway
+```
+
+### Container-aandachtspunten
+
+- **USB-device**: pas `/dev/ttyACM0` aan in `docker-compose.yml` (`devices:`-blok) als je companion een ander pad heeft. Check op de host met `ls /dev/ttyACM*` of `lsusb`.
+- **Permissions**: de container draait als non-root user `app` (UID 1000) in groep `dialout`. Als je host een andere group-id voor dialout gebruikt, kan een permission-error optreden — fix met `--group-add` op de host-uid van dialout.
+- **Persistente data**: alleen het `./data`-volume; bij `docker compose down -v` ben je je DB kwijt. Backup `./data/meshcore.db` regelmatig.
+- **Updates**: `docker compose up -d --build` na een code-pull. Schema-migraties draaien automatisch.
+
+### CLI-toegang vanuit een container
+
+In een container is de interactieve CLI van `gateway.py` beperkt bruikbaar — alle admin-functies zitten al in de Web UI. Voor de paar dingen die alleen via CLI gaan:
+
+#### `--reset-admin` (admin-wachtwoord vergeten)
+
+`--reset-admin` doet alleen DB-werk en exit zonder de USB te claimen. Je kan 'm dus naast een draaiende gateway uitvoeren als one-shot:
+
+```bash
+docker compose run --rm gateway python gateway.py --reset-admin
+```
+
+Hierna kan je in de browser via `/setup` opnieuw een admin aanmaken.
+
+> Let op: dit start een tweede container die hetzelfde DB-volume mount. SQLite met WAL is daar prima tegen bestand voor lees/één-write, maar voor de zekerheid kun je ook eerst de gateway stoppen: `docker compose stop gateway && docker compose run --rm gateway python gateway.py --reset-admin && docker compose start gateway`.
+
+#### Interactieve CLI (zelden nodig)
+
+Als je echt de gateway-CLI live wilt zien (`/info`, `/users`, etc.) en niet alleen de Web UI wilt gebruiken:
+
+1. Stop de service: `docker compose stop gateway`
+2. Start handmatig met TTY: `docker compose run --rm --service-ports gateway`
+3. Detach (zonder te stoppen) is hier niet nodig; gewoon `Ctrl-C` of `/quit` om te stoppen.
+
+#### `docker logs` voor diagnose
+
+Voor read-only inspectie van wat de gateway doet (incl. `MESHCORE_DEBUG=1` events):
+
+```bash
+docker compose logs -f gateway
+```
+
+---
+
+## Auto-start als service
+
+### Optie A: via Docker (aanbevolen op een Pi)
+
+`docker-compose.yml` heeft al `restart: unless-stopped`. Bij een host-reboot start de container vanzelf op, mits de Docker daemon zelf ook auto-start:
+
+```bash
+sudo systemctl enable docker
+sudo systemctl start docker
+```
+
+Op Raspberry Pi OS staat dat normaal al aan na `apt install docker.io` of de officiële Docker-install. Verifieer met `systemctl is-enabled docker`.
+
+Eenmaal `docker compose up -d` gestart blijft het draaien tot je expliciet `docker compose down` doet — herstart van Pi inclusief.
+
+### Optie B: native via systemd
+
+Voor wie liever zonder Docker draait. Het project bevat een kant-en-klaar template-bestand `meshcore-gateway.service.example` dat je naar `/etc/systemd/system/` kopieert en aanpast.
+
+#### Stap-voor-stap
+
+1. **User in dialout-groep**: nodig voor toegang tot `/dev/ttyACM*`:
+   ```bash
+   sudo usermod -aG dialout $USER
+   ```
+   Log opnieuw in (of `newgrp dialout`) zodat de groepswijziging actief wordt.
+
+2. **Kopieer en pas het template aan**:
+   ```bash
+   sudo cp meshcore-gateway.service.example /etc/systemd/system/meshcore-gateway.service
+   sudo nano /etc/systemd/system/meshcore-gateway.service
+   ```
+   Pas in elk geval aan:
+   - `User=` — de Linux-user waarmee de gateway moet draaien
+   - `WorkingDirectory=` — pad naar je project-folder
+   - `ExecStart=` — controleer het pad waar `uv` staat (`which uv`); op een fresh Pi is dat vaak `/home/<user>/.local/bin/uv`
+   - `Environment="MESHCORE_DB=..."` — pad naar `data/meshcore.db`
+   - `Environment="MESHCORE_WEB_HOST=..."` — `127.0.0.1` voor alleen-localhost, `0.0.0.0` of een vast LAN-IP voor andere apparaten
+
+3. **Maak de data-folder aan** (eenmalig, zodat de service erin kan schrijven):
+   ```bash
+   mkdir -p data
+   ```
+
+4. **Activeer en start**:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now meshcore-gateway
+   ```
+
+5. **Verifieer**:
+   ```bash
+   sudo systemctl status meshcore-gateway
+   sudo journalctl -u meshcore-gateway -f
+   ```
+   In de log moet je `[*] geen TTY beschikbaar — CLI uitgeschakeld (headless modus)` zien (gevolgd door normale opstartmeldingen) — dat is correct gedrag onder systemd.
+
+#### Beheer-commando's
+
+```bash
+sudo systemctl stop meshcore-gateway       # stoppen
+sudo systemctl start meshcore-gateway      # starten
+sudo systemctl restart meshcore-gateway    # herstart na config-wijziging
+sudo systemctl disable meshcore-gateway    # uit auto-start halen
+sudo journalctl -u meshcore-gateway -f     # live logs
+sudo journalctl -u meshcore-gateway -n 200 # laatste 200 regels
+```
+
+#### Wijzigingen in de unit-file
+
+Na een edit van `/etc/systemd/system/meshcore-gateway.service` is een `daemon-reload` + `restart` nodig:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart meshcore-gateway
+```
+
+#### Admin-wachtwoord vergeten (systemd-versie)
+
+Stop de service, run `--reset-admin` als de juiste user, herstart:
+
+```bash
+sudo systemctl stop meshcore-gateway
+cd /home/<user>/meshcore-gateway   # jouw projectpad
+uv run gateway.py --reset-admin
+sudo systemctl start meshcore-gateway
+```
+
+Ga vervolgens naar de Web UI → `/setup` voor een nieuwe admin.
+
+### Welke kies ik?
+
+- **Docker** — als je al containers gebruikt op de Pi, of meerdere apps wilt isoleren. Eenvoudigste updates: `docker compose pull && docker compose up -d`.
+- **systemd** — als je een minimaal-overhead Pi wilt en alleen deze ene app draait. Iets sneller bij start, geen Docker-laag.
+
+Beide overleven host-reboots zonder ingrijpen.
 
 ---
 
@@ -321,11 +495,20 @@ Voor diepere diagnose: start met `MESHCORE_DEBUG=1` om alle inkomende meshcore-e
 
 ```
 WebClient/
-  gateway.py        — entry-point: connectie + CLI + dispatch + webserver-startup
-  web.py            — FastAPI + Socket.IO + alle web-endpoints + APP_HTML
-  bot.py            — bot-framework (luistert op dispatch, leest DB-bots, vult variabelen)
-  db.py             — SQLAlchemy async + alle modellen (Message/Channel/User/Bot/Hashtag/UserContact)
-  meshcore.db       — SQLite-database (auto-aangemaakt)
-  pyproject.toml    — dependencies
-  README.md         — dit bestand
+  gateway.py                          — entry-point: connectie + CLI + dispatch + webserver-startup
+  web.py                              — FastAPI + Socket.IO + alle web-endpoints + APP_HTML
+  bot.py                              — bot-framework (DB-driven, variable-templates)
+  db.py                               — SQLAlchemy async + alle modellen
+  meshcore.db                         — SQLite-database (auto-aangemaakt; in container: /data/meshcore.db)
+  pyproject.toml                      — dependencies (Python 3.12+)
+  requirements.txt                    — pinned deps voor pip / Docker-build
+  Dockerfile                          — container-image (python:3.12-slim base)
+  docker-compose.yml                  — orchestratie met USB-device + volume + port
+  .dockerignore                       — uitsluitingen voor docker-build context
+  meshcore-gateway.service.example    — voorbeeld-systemd-unit (kopieer + aanpassen)
+  README.md                           — dit bestand
 ```
+
+---
+
+&copy; Flight 815 B.V.

@@ -1,0 +1,37 @@
+# MeshCore Gateway — docker-compose
+#
+# Eerste keer:  docker compose up -d --build
+# Daarna:       docker compose up -d   (na pull/wijzigingen: --build)
+# Logs:         docker compose logs -f
+# Stop:         docker compose down
+#
+# USB-passthrough werkt op Linux/Pi via 'devices'. Op macOS/Windows zonder
+# extra VM-tooling NIET — die hosten de USB niet aan Docker.
+
+services:
+  gateway:
+    build: .
+    image: meshcore-gateway:latest
+    container_name: meshcore-gateway
+    restart: unless-stopped
+
+    ports:
+      - "8080:8080"   # Web UI (host:container)
+
+    devices:
+      # Pas aan naar het pad dat 'lsusb' / 'ls /dev/ttyACM*' op de host toont.
+      # Vaak /dev/ttyACM0 op Linux, op een Pi soms /dev/ttyUSB0.
+      - "/dev/ttyACM0:/dev/ttyACM0"
+
+    volumes:
+      - ./data:/data  # SQLite-DB: ./data/meshcore.db
+
+    environment:
+      # Defaults staan al in de Dockerfile; hier kun je overrides zetten.
+      MESHCORE_PORT: /dev/ttyACM0
+      # MESHCORE_WEB_PORT: 8080
+      # MESHCORE_DEBUG: "1"
+
+    # CPU/memory limits voor een Pi (optioneel — uncomment indien gewenst)
+    # mem_limit: 512m
+    # cpus: 1.0

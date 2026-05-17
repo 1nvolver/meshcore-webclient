@@ -1,0 +1,44 @@
+# Example systemd unit-file voor MeshCore Gateway (native installatie).
+#
+# Plaats deze als:    /etc/systemd/system/meshcore-gateway.service
+# Pas paden + user aan naar je eigen setup.
+# Activeer:           sudo systemctl daemon-reload
+#                     sudo systemctl enable --now meshcore-gateway
+# Status / logs:      sudo systemctl status meshcore-gateway
+#                     sudo journalctl -u meshcore-gateway -f
+
+[Unit]
+Description=MeshCore Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# User + group: moet in dialout-groep zitten voor /dev/ttyACM*
+User=admin
+Group=dialout
+
+# Werkmap = waar gateway.py / web.py / db.py / bot.py staan
+WorkingDirectory=/home/admin/meshcore/webclient
+
+# Met uv (aanbevolen):
+ExecStart=/home/admin/.local/bin/uv run gateway.py # controller het pad waar uv staat
+# Alternatief, direct met venv-python:
+# ExecStart=/home/admin/meshcore/webclient/.venv/bin/python gateway.py
+
+Restart=on-failure
+RestartSec=10
+
+# Environment-variabelen (zie README voor de hele lijst)
+Environment="MESHCORE_WEB_HOST=127.0.0.1" # pas aan naar het fixed IP van de host
+Environment="MESHCORE_DB=/home/admin/meshcore/webclient/data/meshcore.db"
+# Environment="MESHCORE_PORT=/dev/ttyACM0"
+# Environment="MESHCORE_DEBUG=1"
+
+# Logging naar journald (sudo journalctl -u meshcore-gateway -f)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

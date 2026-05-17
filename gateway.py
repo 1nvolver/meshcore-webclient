@@ -1457,7 +1457,8 @@ async def main() -> int:
     if not any(c.idx == 0 for c in existing_channels):
         await db.upsert_channel(0, name="Public", is_public=True, has_key=False, kind="public")
 
-    # CLI-flag voor admin-reset
+    # CLI-flag voor admin-reset — one-shot, vereist GEEN USB. Handig vanuit
+    # een container: `docker compose run --rm gateway python gateway.py --reset-admin`.
     if reset_admin_flag:
         users = await db.list_users()
         admins = [u for u in users if u.role == "admin"]
@@ -1468,6 +1469,8 @@ async def main() -> int:
                 await db.delete_user(u.username)
             print(f"[*] --reset-admin: {len(admins)} admin-account(s) gewist.")
             print("    Bij eerstvolgende /login wordt /setup doorlopen.")
+        await db.close_db()
+        return 0
 
     if not port:
         print("ERROR: kon geen MeshCore-device vinden via USB.")
@@ -1529,7 +1532,16 @@ async def main() -> int:
         except NotImplementedError:
             pass  # Windows
 
-    cli_task = asyncio.create_task(cli_loop(mc))
+    # Headless detectie: als stdin geen TTY is (systemd, docker zonder -it,
+    # piped invoer), géén CLI-loop starten. Anders zou input() direct EOF
+    # geven en zou main() per ongeluk afsluiten alsof de user /quit doet.
+    has_tty = bool(getattr(sys.stdin, "isatty", lambda: False)())
+    cli_task: Optional[asyncio.Task] = None
+    if has_tty:
+        cli_task = asyncio.create_task(cli_loop(mc))
+    else:
+        print("[*] geen TTY beschikbaar — CLI uitgeschakeld (headless modus)")
+
     stop_task = asyncio.create_task(stop.wait())
     wd_task = asyncio.create_task(watchdog(mc, stop))
     rc_task = asyncio.create_task(repeater_cache_loop(mc, stop))
@@ -1582,7 +1594,10 @@ async def main() -> int:
     except Exception as e:  # noqa: BLE001
         print(f"[!] bot-framework niet gestart: {e}")
 
-    await asyncio.wait({cli_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+    wait_set = {stop_task}
+    if cli_task is not None:
+        wait_set.add(cli_task)
+    await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
 
     # Stop alle achtergrondtasks netjes
     stop.set()
@@ -1599,8 +1614,11 @@ async def main() -> int:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
 
-    # CLI-task, watchdog, repeater-cache wel cancellen
-    for t in (cli_task, wd_task, rc_task):
+    # CLI-task (alleen als TTY), watchdog, repeater-cache cancellen
+    bg_tasks = [wd_task, rc_task]
+    if cli_task is not None:
+        bg_tasks.append(cli_task)
+    for t in bg_tasks:
         if not t.done():
             t.cancel()
             try:

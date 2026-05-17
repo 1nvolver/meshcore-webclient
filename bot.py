@@ -41,6 +41,26 @@ _gateway_state = None               # voor live self_name lookup
 _REPLY_DEBOUNCE_S = 5.0
 _recent_replies: dict[tuple[int, str], float] = {}
 
+# Bot-cache: voorkomt een DB-roundtrip per inkomend channel-bericht.
+# Wordt elke _BOTS_TTL_S seconden ververst. Admin-wijzigingen zijn dus
+# uiterlijk na die periode actief — ruim snel genoeg voor bot-beheer.
+_BOTS_TTL_S = 30.0
+_bots_cache: list = []
+_bots_cache_ts: float = 0.0
+
+
+async def _get_bots():
+    """Geef de enabled bots terug — uit cache, ververst elke _BOTS_TTL_S."""
+    global _bots_cache, _bots_cache_ts
+    now = time.time()
+    if now - _bots_cache_ts > _BOTS_TTL_S:
+        try:
+            _bots_cache = await db.list_bots(only_enabled=True)
+            _bots_cache_ts = now
+        except Exception:  # noqa: BLE001
+            pass  # bij fout: oude cache blijft staan
+    return _bots_cache
+
 
 # ---------------------------------------------------------------------------
 # Variable-resolver
@@ -141,10 +161,9 @@ async def handle(msg) -> None:
     if not requested:
         return
 
-    # Vind matching bots
-    try:
-        bots = await db.list_bots(only_enabled=True)
-    except Exception:  # noqa: BLE001
+    # Vind matching bots (uit cache met TTL — geen DB-roundtrip per msg)
+    bots = await _get_bots()
+    if not bots:
         return
 
     now = time.time()

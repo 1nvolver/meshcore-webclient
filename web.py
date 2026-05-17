@@ -30,6 +30,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 import db
 
 
+# Versie-nummer x.y.z:
+#   x = major (handmatig te bepalen)
+#   y = minor (handmatig te bepalen)
+#   z = dot-versie, bumpt bij elke door de gebruiker gevraagde wijziging
+APP_VERSION = "1.1.010"
+
+
 # ---------------------------------------------------------------------------
 # Config / state
 # ---------------------------------------------------------------------------
@@ -118,7 +125,7 @@ def _is_authed_environ(environ: dict) -> bool:
 LOGIN_HTML = """<!DOCTYPE html>
 <html lang="nl"><head>
 <meta charset="utf-8">
-<title>MeshCore Gateway — Login</title>
+<title>MeshCore Gateway Web Client — Login</title>
 <style>
   body{font-family:system-ui,sans-serif;max-width:400px;margin:5em auto;padding:1em;background:#f6f6f6}
   h2{margin-top:0}
@@ -128,21 +135,23 @@ LOGIN_HTML = """<!DOCTYPE html>
   button{margin-top:1em;background:#2c5;color:#fff;border:0;font-weight:600;cursor:pointer}
   button:hover{background:#1b4}
   .err{color:#c33;padding:8px 0;font-size:0.9em}
+  footer{margin-top:2em;text-align:center;color:#888;font-size:0.8em}
 </style></head>
 <body>
-<h2>MeshCore Gateway</h2>
+<h2>MeshCore Gateway Web Client</h2>
 <form method="POST" action="/login">
   <label>Gebruikersnaam<input type="text" name="username" autofocus required autocomplete="username"></label>
   <label>Wachtwoord<input type="password" name="password" required autocomplete="current-password"></label>
   <button type="submit">Login</button>
   {err}
 </form>
+<footer>&copy; Flight 815 B.V.</footer>
 </body></html>"""
 
 
 SETUP_HTML = """<!DOCTYPE html>
 <html lang="nl"><head>
-<meta charset="utf-8"><title>MeshCore Gateway — Setup</title>
+<meta charset="utf-8"><title>MeshCore Gateway Web Client — Setup</title>
 <style>
   body{font-family:system-ui,sans-serif;max-width:420px;margin:5em auto;padding:1em;background:#f6f6f6}
   h2{margin-top:0}p.intro{color:#555;font-size:0.9em}
@@ -152,10 +161,11 @@ SETUP_HTML = """<!DOCTYPE html>
   button{margin-top:1em;background:#2c5;color:#fff;border:0;font-weight:600;cursor:pointer}
   button:hover{background:#1b4}
   .err{color:#c33;padding:8px 0;font-size:0.9em}
+  footer{margin-top:2em;text-align:center;color:#888;font-size:0.8em}
 </style></head>
 <body>
-<h2>Eerste opzet</h2>
-<p class="intro">Maak de eerste admin-gebruiker aan.</p>
+<h2>MeshCore Gateway Web Client</h2>
+<p class="intro">Eerste opzet — maak de admin-gebruiker aan.</p>
 <form method="POST" action="/setup">
   <label>Gebruikersnaam<input type="text" name="username" autofocus required minlength="2"></label>
   <label>Wachtwoord<input type="password" name="password" required minlength="6"></label>
@@ -163,6 +173,7 @@ SETUP_HTML = """<!DOCTYPE html>
   <button type="submit">Aanmaken</button>
   {err}
 </form>
+<footer>&copy; Flight 815 B.V.</footer>
 </body></html>"""
 
 
@@ -172,7 +183,7 @@ SETUP_HTML = """<!DOCTYPE html>
 APP_HTML = """<!DOCTYPE html>
 <html lang="nl"><head>
 <meta charset="utf-8">
-<title>MeshCore Gateway</title>
+<title>MeshCore Gateway Web Client</title>
 <style>
   *{box-sizing:border-box}
   html,body{height:100%}
@@ -209,6 +220,7 @@ APP_HTML = """<!DOCTYPE html>
 
   /* ---- tree ----------------------------------------------------- */
   .tree-content{flex:1;overflow-y:auto;padding:8px 4px;font-size:0.9em}
+  .tree-footer{flex:0 0 auto;padding:6px 10px;border-top:1px solid #e5e5e5;font-size:0.75em;color:#999;text-align:center;background:#f3f3f3;font-family:ui-monospace,monospace}
   .tree-group{margin-bottom:6px}
   .tree-group-h{padding:6px 10px;font-weight:600;color:#666;font-size:0.85em;text-transform:uppercase;letter-spacing:0.05em;cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px}
   .tree-group-h::before{content:"\\25BE";display:inline-block;width:14px;font-size:1.1em;color:#666;line-height:1}
@@ -341,7 +353,7 @@ APP_HTML = """<!DOCTYPE html>
 <body>
 
 <header>
-  <span class="title" id="conn-title">MeshCore Gateway</span>
+  <span class="title" id="conn-title">MeshCore Gateway Web Client</span>
   <div class="hdr-status" id="hdr-status"></div>
   <div class="avatar" onclick="toggleMenu(event)" title="account">
     <svg viewBox="0 0 24 24"><path d="M12 12c2.7 0 5-2.3 5-5s-2.3-5-5-5-5 2.3-5 5 2.3 5 5 5zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>
@@ -395,6 +407,7 @@ APP_HTML = """<!DOCTYPE html>
         </ul>
       </div>
     </div>
+    <div class="tree-footer">v{VERSION}</div>
   </div>
 
   <!-- ------ MIDDLE PANE ------ -->
@@ -1066,8 +1079,8 @@ function selectMsg(m, el){
 
 /* socketio */
 const sock = io({transports:['websocket','polling']});
-sock.on('connect',    () => { $('conn-title').textContent='MeshCore Gateway · verbonden'; $('txt').disabled=false; $('btn').disabled=false; });
-sock.on('disconnect', () => { $('conn-title').textContent='MeshCore Gateway · verbroken'; $('txt').disabled=true; $('btn').disabled=true; });
+sock.on('connect',    () => { $('conn-title').textContent='MeshCore Gateway Web Client · verbonden'; $('txt').disabled=false; $('btn').disabled=false; });
+sock.on('disconnect', () => { $('conn-title').textContent='MeshCore Gateway Web Client · verbroken'; $('txt').disabled=true; $('btn').disabled=true; });
 sock.on('connect_error', () => { setTimeout(()=>location.href='/login', 1500); });
 sock.on('msg', (m) => {
   // Mention-detectie: alleen op kanaal-msgs (DMs zijn al gericht aan mij)
@@ -1350,7 +1363,7 @@ async function editScope(slot){
   try {
     const r = await api('/admin/channels/scope', {method:'POST', body:JSON.stringify({slot, scope: v})});
     toast(r.message || 'ok', 'ok');
-    refresh();
+    refreshAndRerender();
   } catch(e){}
 }
 
@@ -1877,25 +1890,25 @@ function fmtKV(obj){return Object.entries(obj||{}).map(([k,v])=>'<div><span clas
 async function setRadio(){
   const body={freq:parseFloat($('r-freq').value),bw:parseFloat($('r-bw').value),sf:parseInt($('r-sf').value),cr:parseInt($('r-cr').value)};
   if (!confirm('Radio → freq='+body.freq+' bw='+body.bw+' sf='+body.sf+' cr='+body.cr+'?\\nReboot vereist.')) return;
-  const r=await api('/admin/radio',{method:'POST',body:JSON.stringify(body)}); toast(r.message||'ok','ok'); refresh();
+  const r=await api('/admin/radio',{method:'POST',body:JSON.stringify(body)}); toast(r.message||'ok','ok'); refreshAndRerender();
 }
 async function setTxPower(){
   const dbm=parseInt($('r-tx').value);
   if (!confirm('tx-power → '+dbm+' dBm? Reboot vereist.')) return;
-  const r=await api('/admin/txpower',{method:'POST',body:JSON.stringify({dbm})}); toast(r.message||'ok','ok'); refresh();
+  const r=await api('/admin/txpower',{method:'POST',body:JSON.stringify({dbm})}); toast(r.message||'ok','ok'); refreshAndRerender();
 }
 async function setName(){
   const name=$('n-name').value.trim(); if(!name) return;
   if (!confirm('Naam → '+name+'?')) return;
-  const r=await api('/admin/name',{method:'POST',body:JSON.stringify({name})}); toast(r.message||'ok','ok'); refresh();
+  const r=await api('/admin/name',{method:'POST',body:JSON.stringify({name})}); toast(r.message||'ok','ok'); refreshAndRerender();
 }
 async function setCoords(){
   const lat=parseFloat($('n-lat').value),lon=parseFloat($('n-lon').value);
-  const r=await api('/admin/coords',{method:'POST',body:JSON.stringify({lat,lon})}); toast(r.message||'ok','ok');
+  const r=await api('/admin/coords',{method:'POST',body:JSON.stringify({lat,lon})}); toast(r.message||'ok','ok'); refreshAndRerender();
 }
 async function clearCoords(){
   if (!confirm('Coords wissen?')) return;
-  const r=await api('/admin/coords',{method:'POST',body:JSON.stringify({clear:true})}); toast(r.message||'ok','ok'); refresh();
+  const r=await api('/admin/coords',{method:'POST',body:JSON.stringify({clear:true})}); toast(r.message||'ok','ok'); refreshAndRerender();
 }
 async function rebootNode(){
   if (!confirm('Companion rebooten?')) return;
@@ -1918,12 +1931,12 @@ async function addChannel(){
   try {
     const r = await api('/admin/channels/add', {method:'POST', body:JSON.stringify(body)});
     toast(r.message + (r.generated_key ? '\\nKEY: '+r.generated_key : ''), 'ok');
-    refresh();
+    refreshAndRerender();
   } catch(e){}
 }
 async function removeChannel(slot){
   if (!confirm('Slot '+slot+' uit DB-metadata verwijderen?')) return;
-  await api('/admin/channels/remove',{method:'POST',body:JSON.stringify({slot})}); refresh();
+  await api('/admin/channels/remove',{method:'POST',body:JSON.stringify({slot})}); refreshAndRerender();
 }
 async function cleanOlder(){
   const n=parseInt($('hk-age').value),unit=parseInt($('hk-unit').value);
@@ -1931,11 +1944,11 @@ async function cleanOlder(){
   const seconds=n*unit;
   const c=await api('/admin/clean/preview?seconds='+seconds);
   if (!confirm(c.count+' berichten ouder dan dat — verwijderen?')) return;
-  const r=await api('/admin/clean',{method:'POST',body:JSON.stringify({mode:'older',seconds})}); toast(r.message,'ok'); refresh();
+  const r=await api('/admin/clean',{method:'POST',body:JSON.stringify({mode:'older',seconds})}); toast(r.message,'ok'); refreshAndRerender();
 }
 async function cleanAll(){
   if (!confirm('ALLE berichten verwijderen?')) return;
-  const r=await api('/admin/clean',{method:'POST',body:JSON.stringify({mode:'all'})}); toast(r.message,'ok'); refresh();
+  const r=await api('/admin/clean',{method:'POST',body:JSON.stringify({mode:'all'})}); toast(r.message,'ok'); refreshAndRerender();
 }
 async function vacuum(){
   if (!confirm('VACUUM uitvoeren?')) return;
@@ -2403,365 +2416,16 @@ async function refreshHeaderOnly(){
     renderHeaderStatus();
   } catch(e){}
 }
-</script>
-</body></html>"""
 
-
-CHAT_HTML = """<!DOCTYPE html>
-<html lang="nl"><head>
-<meta charset="utf-8">
-<title>MeshCore Gateway</title>
-<style>
-  *{box-sizing:border-box}
-  body{font-family:system-ui,sans-serif;margin:0;display:flex;flex-direction:column;height:100vh;background:#fafafa}
-  header{padding:10px 16px;background:#2c5;color:#fff;font-weight:600;display:flex;justify-content:space-between;align-items:center}
-  header a{color:#cfc;text-decoration:none;font-size:0.85em}
-  header a:hover{text-decoration:underline}
-  #log{flex:1;overflow-y:auto;padding:8px 16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:#fff}
-  .msg{margin:3px 0;line-height:1.5}
-  .out{color:#070}
-  .out::before{content:"\\2192  ";color:#7a7;font-weight:bold}
-  .in::before{content:"   "}
-  .ts{color:#999;margin-right:8px}
-  .peer{font-weight:600;margin-right:6px}
-  .sys{color:#999;font-style:italic}
-  form{display:flex;border-top:1px solid #ddd;padding:8px;background:#f0f0f0}
-  #txt{flex:1;padding:10px;font:inherit;border:1px solid #ccc;border-radius:4px}
-  button{padding:10px 20px;font:inherit;background:#2c5;color:#fff;border:0;border-radius:4px;margin-left:8px;cursor:pointer;font-weight:600}
-  button:hover{background:#1b4}
-  button:disabled{background:#aaa;cursor:wait}
-</style></head>
-<body>
-<header>
-  <span id="title">MeshCore Gateway — Public</span>
-  <span><span id="conn" style="opacity:0.7">verbinden…</span> · <a href="/admin">admin</a> · <a href="/logout">logout</a></span>
-</header>
-<div id="log"></div>
-<form id="f">
-  <input id="txt" autocomplete="off" placeholder="Bericht naar Public…" autofocus disabled>
-  <button id="btn" type="submit" disabled>Stuur</button>
-</form>
-<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-<script>
-  const log  = document.getElementById('log');
-  const f    = document.getElementById('f');
-  const txt  = document.getElementById('txt');
-  const btn  = document.getElementById('btn');
-  const conn = document.getElementById('conn');
-
-  function escapeHTML(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;","'":"&#39;"})[c]);}
-  function add(cls, ts, peer, text){
-    const div = document.createElement('div');
-    div.className = 'msg ' + cls;
-    div.innerHTML = '<span class="ts">'+ts+'</span><span class="peer">'+escapeHTML(peer||'?')+':</span>' + escapeHTML(text);
-    log.appendChild(div);
-    log.scrollTop = log.scrollHeight;
-  }
-  function addSys(text){
-    const div = document.createElement('div');
-    div.className = 'msg sys';
-    div.textContent = '— ' + text + ' —';
-    log.appendChild(div);
-    log.scrollTop = log.scrollHeight;
-  }
-
-  const sock = io({transports:['websocket','polling']});
-  sock.on('connect',    () => { conn.textContent='verbonden'; conn.style.opacity=1; txt.disabled=false; btn.disabled=false; txt.focus(); });
-  sock.on('disconnect', () => { conn.textContent='verbroken'; conn.style.opacity=0.7; txt.disabled=true; btn.disabled=true; });
-  sock.on('connect_error', (e) => { conn.textContent='auth fout — login opnieuw'; setTimeout(()=>location.href='/login',1500); });
-
-  sock.on('history', (rows) => {
-    log.innerHTML = '';
-    rows.forEach(m => add(m.direction, m.ts, m.peer, m.text));
-    addSys('einde historie');
-  });
-  sock.on('msg', (m) => add(m.direction, m.ts, m.peer, m.text));
-
-  f.addEventListener('submit', (e) => {
-    e.preventDefault();
-    const t = txt.value.trim();
-    if (!t) return;
-    btn.disabled = true;
-    sock.emit('send', {channel_idx: 0, text: t}, (ack) => {
-      btn.disabled = false;
-      if (!ack || !ack.ok) addSys('verzenden mislukt: ' + (ack && ack.err || 'onbekende fout'));
-      txt.focus();
-    });
-    txt.value = '';
-  });
-</script>
-</body></html>"""
-
-
-ADMIN_HTML = """<!DOCTYPE html>
-<html lang="nl"><head>
-<meta charset="utf-8">
-<title>MeshCore Gateway — Admin</title>
-<style>
-  *{box-sizing:border-box}
-  body{font-family:system-ui,sans-serif;margin:0;background:#fafafa;color:#222}
-  header{padding:10px 16px;background:#2c5;color:#fff;font-weight:600;display:flex;justify-content:space-between;align-items:center}
-  header a{color:#cfc;text-decoration:none;font-size:0.85em}
-  main{max-width:900px;margin:0 auto;padding:16px}
-  section{background:#fff;border-radius:8px;padding:16px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,0.05)}
-  h2{margin:0 0 12px;font-size:1.1em;color:#2c5;border-bottom:1px solid #eee;padding-bottom:6px}
-  table{width:100%;border-collapse:collapse;font-size:0.9em}
-  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #f0f0f0}
-  th{background:#f8f8f8;font-weight:600}
-  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}
-  .row label{flex:0 0 110px;font-size:0.9em;color:#555}
-  input,select{padding:6px 8px;font:inherit;border:1px solid #ccc;border-radius:4px}
-  input[type=number]{width:90px}
-  input[type=text]{flex:1;min-width:180px}
-  button{padding:6px 14px;font:inherit;background:#2c5;color:#fff;border:0;border-radius:4px;cursor:pointer;font-weight:600}
-  button:hover{background:#1b4}
-  button.danger{background:#c53}
-  button.danger:hover{background:#a32}
-  button.small{padding:3px 8px;font-size:0.85em}
-  .kv{font-family:ui-monospace,monospace;font-size:13px;color:#444}
-  .kv span.k{display:inline-block;width:140px;color:#888}
-  .ok{color:#070}
-  .err{color:#c33}
-  .note{font-size:0.85em;color:#888;margin-top:4px}
-  #toast{position:fixed;bottom:20px;right:20px;padding:10px 16px;background:#222;color:#fff;border-radius:4px;opacity:0;transition:opacity 0.2s;pointer-events:none;max-width:420px}
-  #toast.show{opacity:0.95}
-</style></head>
-<body>
-<header>
-  <span>MeshCore Gateway — Admin</span>
-  <span><a href="/">chat</a> · <a href="/logout">logout</a></span>
-</header>
-<main>
-
-  <section>
-    <h2>Status</h2>
-    <div class="kv" id="status">…laden…</div>
-  </section>
-
-  <section>
-    <h2>Radio</h2>
-    <div class="kv" id="radio-current">…</div>
-    <div class="row" style="margin-top:10px">
-      <label>Frequentie</label><input id="r-freq" type="number" step="0.001"> MHz
-    </div>
-    <div class="row">
-      <label>Bandwidth</label><input id="r-bw" type="number" step="0.01"> kHz
-    </div>
-    <div class="row">
-      <label>Spreading</label><input id="r-sf" type="number" min="5" max="12">
-    </div>
-    <div class="row">
-      <label>Coding</label><input id="r-cr" type="number" min="5" max="8">
-    </div>
-    <div class="row"><button onclick="setRadio()">Radio toepassen</button>
-      <span class="note">reboot vereist om actief te worden</span></div>
-
-    <div class="row" style="margin-top:14px">
-      <label>Tx-power</label><input id="r-tx" type="number" min="0" max="30"> dBm
-      <button onclick="setTxPower()">Power toepassen</button>
-    </div>
-  </section>
-
-  <section>
-    <h2>Node</h2>
-    <div class="row">
-      <label>Naam</label><input id="n-name" type="text">
-      <button onclick="setName()">Naam wijzigen</button>
-    </div>
-    <div class="row">
-      <label>Locatie</label>
-      <input id="n-lat" type="number" step="0.000001" placeholder="lat" style="flex:0;width:140px">
-      <input id="n-lon" type="number" step="0.000001" placeholder="lon" style="flex:0;width:140px">
-      <button onclick="setCoords()">Set</button>
-      <button onclick="clearCoords()" class="small">clear</button>
-    </div>
-    <div class="row" style="margin-top:14px">
-      <button onclick="rebootNode()" class="danger">Reboot companion</button>
-      <span class="note">verbinding gaat tijdelijk weg (~10s)</span>
-    </div>
-  </section>
-
-  <section>
-    <h2>Channels</h2>
-    <table id="ch-tbl"><thead><tr><th>#</th><th>Naam</th><th>Type</th><th>Alias</th><th></th></tr></thead><tbody></tbody></table>
-    <div class="row" style="margin-top:14px">
-      <input id="ch-slot" type="number" min="1" max="7" placeholder="slot" style="flex:0;width:80px">
-      <input id="ch-name" type="text" placeholder="naam">
-      <input id="ch-key" type="text" placeholder="hex-key (optioneel, leeg = random)" style="flex:2">
-      <button onclick="addChannel()">Toevoegen</button>
-    </div>
-    <div class="note">Slots 1-7 zijn voor private channels. Slot 0 = Public.</div>
-  </section>
-
-  <section>
-    <h2>Housekeeping</h2>
-    <div class="row">
-      <label>DB-records</label><span id="db-count" class="kv">…</span>
-    </div>
-    <div class="row" style="margin-top:10px">
-      <label>Verwijder ouder dan</label>
-      <input id="hk-age" type="number" placeholder="aantal" style="flex:0;width:90px">
-      <select id="hk-unit"><option value="86400">dagen</option><option value="3600">uren</option><option value="60">minuten</option></select>
-      <button onclick="cleanOlder()" class="danger">Verwijder</button>
-    </div>
-    <div class="row">
-      <button onclick="cleanAll()" class="danger">Alles verwijderen</button>
-      <button onclick="vacuum()">VACUUM</button>
-    </div>
-  </section>
-
-</main>
-
-<div id="toast"></div>
-
-<script>
-let CURRENT = {};
-
-function toast(msg, cls){
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = 'show' + (cls?' '+cls:'');
-  setTimeout(()=>t.className='', 4000);
+// Wordt aangeroepen door admin-actions (save/edit/delete) waar de zichtbare
+// tabel wel direct moet updaten. Verschilt van refresh(): die wordt ook
+// periodiek aangeroepen en mag NIET rerenderen want dat wist form-inputs.
+async function refreshAndRerender(){
+  await refresh();
+  if (STATE.view === 'admin')     renderAdmin();
+  if (STATE.view === 'reports')   renderReports();
+  if (STATE.view === 'contacts')  renderContactsManager();
 }
-
-async function api(path, opts){
-  opts = opts || {};
-  opts.headers = Object.assign({'Content-Type':'application/json'}, opts.headers||{});
-  const r = await fetch(path, opts);
-  let body = null;
-  try { body = await r.json(); } catch(e) {}
-  if (!r.ok) {
-    toast((body && body.detail) || ('HTTP '+r.status), 'err');
-    throw new Error(r.status);
-  }
-  return body;
-}
-
-function fmtKV(obj){
-  return Object.entries(obj||{}).map(([k,v])=>'<div><span class="k">'+k+':</span>'+ (v===null||v===undefined?'<i>—</i>':v) +'</div>').join('');
-}
-
-async function refresh(){
-  try {
-    const s = await api('/admin/state');
-    CURRENT = s;
-    document.getElementById('status').innerHTML = fmtKV({
-      'naam': s.node.name, 'pubkey_prefix': s.node.pubkey,
-      'batterij': s.node.battery, 'uptime gateway': s.node.uptime
-    });
-    document.getElementById('radio-current').innerHTML = fmtKV({
-      'freq (MHz)': s.radio.freq, 'bw (kHz)': s.radio.bw,
-      'sf': s.radio.sf, 'cr': s.radio.cr,
-      'tx_power (dBm)': s.radio.tx_power+' / max '+s.radio.max_tx_power
-    });
-    document.getElementById('r-freq').value = s.radio.freq||'';
-    document.getElementById('r-bw').value = s.radio.bw||'';
-    document.getElementById('r-sf').value = s.radio.sf||'';
-    document.getElementById('r-cr').value = s.radio.cr||'';
-    document.getElementById('r-tx').value = s.radio.tx_power||'';
-    document.getElementById('n-name').value = s.node.name||'';
-    document.getElementById('n-lat').value = s.radio.lat||'';
-    document.getElementById('n-lon').value = s.radio.lon||'';
-
-    const tbody = document.querySelector('#ch-tbl tbody');
-    tbody.innerHTML = '';
-    s.channels.forEach(c => {
-      const tr = document.createElement('tr');
-      const type = c.is_public?'public':(c.has_key?'private':'?');
-      tr.innerHTML = '<td>'+c.idx+'</td><td>'+escape(c.name||'')+'</td><td>'+type+'</td><td>'+escape(c.alias||'')+'</td>'
-        + '<td>'+(c.idx===0?'':'<button class="small danger" onclick="removeChannel('+c.idx+')">remove</button>')+'</td>';
-      tbody.appendChild(tr);
-    });
-    document.getElementById('db-count').textContent = s.db.count + ' berichten';
-  } catch(e){}
-}
-
-function escape(s){ return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\\"":"&quot;"}[c])); }
-
-async function setRadio(){
-  const body = {
-    freq: parseFloat(document.getElementById('r-freq').value),
-    bw:   parseFloat(document.getElementById('r-bw').value),
-    sf:   parseInt(document.getElementById('r-sf').value),
-    cr:   parseInt(document.getElementById('r-cr').value),
-  };
-  if (!confirm('Radio wijzigen naar freq='+body.freq+' bw='+body.bw+' sf='+body.sf+' cr='+body.cr+'?\\nReboot vereist.')) return;
-  const r = await api('/admin/radio', {method:'POST', body:JSON.stringify(body)});
-  toast(r.message || 'ok', 'ok');
-  refresh();
-}
-async function setTxPower(){
-  const dbm = parseInt(document.getElementById('r-tx').value);
-  if (!confirm('Tx-power → '+dbm+' dBm?\\nReboot vereist.')) return;
-  const r = await api('/admin/txpower', {method:'POST', body:JSON.stringify({dbm})});
-  toast(r.message || 'ok', 'ok');
-  refresh();
-}
-async function setName(){
-  const name = document.getElementById('n-name').value.trim();
-  if (!name) return;
-  if (!confirm('Naam wijzigen in '+name+'?')) return;
-  const r = await api('/admin/name', {method:'POST', body:JSON.stringify({name})});
-  toast(r.message || 'ok', 'ok');
-  refresh();
-}
-async function setCoords(){
-  const lat = parseFloat(document.getElementById('n-lat').value);
-  const lon = parseFloat(document.getElementById('n-lon').value);
-  const r = await api('/admin/coords', {method:'POST', body:JSON.stringify({lat,lon})});
-  toast(r.message || 'ok', 'ok');
-}
-async function clearCoords(){
-  if (!confirm('Coords wissen?')) return;
-  const r = await api('/admin/coords', {method:'POST', body:JSON.stringify({clear:true})});
-  toast(r.message || 'ok', 'ok');
-  refresh();
-}
-async function rebootNode(){
-  if (!confirm('Companion rebooten? Verbinding gaat ~10s weg.')) return;
-  const r = await api('/admin/reboot', {method:'POST', body:'{}'});
-  toast(r.message || 'gestuurd', 'ok');
-}
-async function addChannel(){
-  const slot = parseInt(document.getElementById('ch-slot').value);
-  const name = document.getElementById('ch-name').value.trim();
-  const key  = document.getElementById('ch-key').value.trim();
-  if (!slot || !name) { toast('slot + naam verplicht', 'err'); return; }
-  const r = await api('/admin/channels/add', {method:'POST', body:JSON.stringify({slot, name, key: key||null})});
-  toast(r.message + (r.generated_key ? '\\nKEY: '+r.generated_key : ''), 'ok');
-  refresh();
-}
-async function removeChannel(slot){
-  if (!confirm('Channel slot '+slot+' uit DB-metadata verwijderen?')) return;
-  const r = await api('/admin/channels/remove', {method:'POST', body:JSON.stringify({slot})});
-  toast(r.message || 'ok', 'ok');
-  refresh();
-}
-async function cleanOlder(){
-  const n = parseInt(document.getElementById('hk-age').value);
-  const unit = parseInt(document.getElementById('hk-unit').value);
-  if (!n) { toast('aantal verplicht','err'); return; }
-  const seconds = n*unit;
-  // eerst tellen
-  const c = await api('/admin/clean/preview?seconds='+seconds);
-  if (!confirm(c.count + ' berichten ouder dan dat — verwijderen?')) return;
-  const r = await api('/admin/clean', {method:'POST', body:JSON.stringify({mode:'older', seconds})});
-  toast(r.message || 'ok', 'ok');
-  refresh();
-}
-async function cleanAll(){
-  if (!confirm('ALLE berichten uit de DB verwijderen?')) return;
-  const r = await api('/admin/clean', {method:'POST', body:JSON.stringify({mode:'all'})});
-  toast(r.message || 'ok', 'ok');
-  refresh();
-}
-async function vacuum(){
-  if (!confirm('VACUUM uitvoeren?')) return;
-  const r = await api('/admin/vacuum', {method:'POST', body:'{}'});
-  toast(r.message || 'ok', 'ok');
-}
-
-refresh();
 </script>
 </body></html>"""
 
@@ -2873,7 +2537,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             return RedirectResponse("/setup", status_code=303)
         if not _is_authed_request(request):
             return RedirectResponse("/login")
-        return HTMLResponse(APP_HTML)
+        return HTMLResponse(APP_HTML.replace("{VERSION}", APP_VERSION))
 
     @app.get("/healthz")
     async def healthz():

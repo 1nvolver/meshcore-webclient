@@ -1,0 +1,168 @@
+# Handoff — MeshCore Gateway Web Client
+
+Stand: versie 1.1.010. Deze notitie is bedoeld om het project in een nieuwe
+AI-/dev-omgeving te kunnen voortzetten. De broncode-bestanden gaan apart mee.
+
+---
+
+## 1. Wat het is
+
+Python-gateway die een via USB aangesloten **MeshCore companion-radio**
+(Seeed XIAO nRF52840, companion-firmware) ontsluit via een web-UI + minimale
+CLI. Slaat al het mesh-verkeer op in SQLite, multi-user met rollen, admin-paneel
+voor radio/kanalen/contacten, bot-framework, rapportages.
+
+Stack: Python 3.12+, `meshcore` (officiële SDK), FastAPI + python-socketio,
+SQLAlchemy async + aiosqlite, uvicorn. Geen build-step; één venv.
+
+---
+
+## 2. Bestanden
+
+| Bestand | Rol |
+|---|---|
+| `gateway.py` | Entry-point. Connectie + companion-handshake, `Dispatch`-bus, CLI-loop (alleen bij TTY), watchdog, repeater-cache, RX_LOG-enrichment, implicit-ack, `send_and_dispatch()`, per-kanaal flood-scope, webserver-/bot-startup. |
+| `web.py` | FastAPI + Socket.IO. Bevat **`APP_HTML`** — één grote string met álle HTML/CSS/JS van de single-page-app. Auth (pbkdf2, in-memory sessies), alle REST/socket-endpoints. `APP_VERSION` staat hier bovenaan. |
+| `bot.py` | DB-driven bot-framework. Hooks op de dispatch, leest bots uit DB (TTL-cache 30s), variable-resolver `{TIME}/{UPRADIO}/{UPNODE}/{HELP}`. |
+| `db.py` | SQLAlchemy async, alle modellen + helpers. `SCHEMA_VERSION` + auto-migraties in `init_db()`. |
+| `Dockerfile`, `docker-compose.yml`, `.dockerignore` | Container (python:3.12-slim, non-root, USB-device passthrough, `/data`-volume). |
+| `meshcore-gateway.service.example` | systemd-unit template (native installatie). |
+| `README.md` | Volledige gebruikershandleiding (setup, container, systemd, caveats). |
+| `requirements.txt` / `pyproject.toml` / `.python-version` | Deps; Python `>=3.12`. |
+
+---
+
+## 3. Architectuurkeuzes
+
+- **Eén dispatch-bus** (`Dispatch` in `gateway.py`). Inkomende én uitgaande
+  berichten worden een `Message`-object (`direction` in/out, `kind` channel/dm,
+  `channel_idx`, `sender`, `text`, `raw`, `expected_ack`, `ack_status`, `db_id`).
+  `dispatch.fire(msg)` → handlers: `print_handler`, `db_handler`, `web_handler`,
+  `bot_handler`. Daarnaast `dispatch.fire_update(payload)` voor ack-status-updates
+  naar de web-UI. Alle send-paden lopen via `send_and_dispatch()` — één plek.
+- **CLI is bewust minimaal** en draait alléén als `stdin` een TTY is (headless
+  detectie — cruciaal voor systemd/Docker, anders sluit de app direct af).
+- **Web-UI is single-page**, alles in `APP_HTML`. Geen framework, geen build.
+  JS-fouten zijn pas zichtbaar bij runtime → zie dev-workflow hieronder.
+- **Auth**: pbkdf2_sha256, sessies in-memory (restart = opnieuw inloggen).
+  Rollen `admin`/`user`; admin-tak in de tree volledig verborgen voor users.
+- **Channels**: slot 0 = Public (vast). Slots 1-7 = `hashtag` (key =
+  `sha256("#naam")[:16]`, secret weglaten bij `set_channel`) of `private`
+  (16-byte AES, zelf gegenereerd). `Channel.kind` onderscheidt ze.
+- **DB-migraties**: forward-only, additief. `init_db()` doet `create_all` +
+  handmatige `ALTER TABLE` / `DROP+recreate` per versie-stap.
+
+---
+
+## 4. DB-schema (`SCHEMA_VERSION = "11"`)
+
+Modellen in `db.py`: `Message`, `Meta`, `Channel`, `Hashtag` (deprecated sinds
+v4), `User`, `UserContact`, `Bot`.
+
+Migratiegeschiedenis: v2 Channel · v3 Hashtag (verlaten) · v4 `Channel.kind` ·
+v5 User · v6 `User.must_change_password` · v7 `Channel.scope` · v8 Message
+ack-tracking (`expected_ack`/`ack_status`/`acked_at`) · v9 UserContact ·
+v10 `UserContact.pubkey` volledige 32-byte hex (tabel gedropt+herbouwd) ·
+v11 Bot.
+
+`Message.peer` = 12-char pubkey-prefix. `UserContact.pubkey` = volledige
+64-char hex. Die inconsistentie vereist op enkele plekken conversie.
+
+---
+
+## 5. Voltooide functionaliteit
+
+- **Fase 1-2**: connectie + companion-handshake-check, auto port-detect,
+  status, CLI-REPL, SQLite-historie, `/history`.
+- **Fase 3**: multi-channel (public/hashtag/private), admin-commando's,
+  housekeeping (clean/vacuum).
+- **Fase 4**: FastAPI + Socket.IO web-UI; drie-koloms-layout (collapsible
+  tree / chat / detail); login + multi-user + rollen; first-login met
+  tijdelijk-wachtwoord → geforceerde wijziging; admin-paneel opgesplitst in
+  Radio / Node / Voorkeuren / Channels / Contacten / Bots / Housekeeping /
+  Gebruikers; Rapportages (berichten-per-uur-grafiek met periode-picklist,
+  top-kanalen, ack-rate, repeater-overzicht).
+- **Berichten-UX**: server-side zoek door alle berichten, paginatie ("laad
+  oudere"), tijd-navigatie-knoppen, pauze/play, emoji-picker, selecteerbare
+  berichten met detail-paneel (RSSI/SNR/hops/pad).
+- **Path-visualisatie**: `set_decrypt_channel_logs(True)` aan; we koppelen
+  `RX_LOG_DATA` zélf op `pkt_hash` aan channel-msgs (meshcore-py's eigen
+  koppeling werkt niet). Multi-path "Heard X times", repeater-naam-resolving
+  via een contact-cache (pubkey-prefix → adv_name).
+- **Ack-tracking**: DM = echt protocol-ack (`✓`/`✓✓`); channel = implicit-ack
+  via RX_LOG-tijdcorrelatie (`↻`). Inline indicatoren + live WebSocket-update.
+- **Mentions**: highlight + beep + toast + (achtergrond-tab) native notificatie.
+- **DM**: tree-tak met per-user opgeslagen contactpersonen; `✓/⚠`-status of
+  de companion de contact kent.
+- **Bots**: admin-defined, reageren alleen op `@[<node-naam>] ?keyword`.
+- **Deployment**: Docker + docker-compose + systemd-template; `--reset-admin`
+  is een one-shot zonder USB-claim.
+
+---
+
+## 6. Belangrijke caveats / fragiele plekken
+
+- **`web.py` is enorm** (~3600 regels, alle HTML/CSS/JS inline). Geen linting;
+  bugs (ongematchte quotes, script-load-order) zijn al meermaals voorgekomen.
+- **RX_LOG → msg-koppeling** en **implicit-ack** zijn tijd-correlatie-heuristieken
+  (binnen 10-15s). Bij druk verkeer kan een verkeerd pad/ack matchen.
+- **Naam-parsing** van channel-afzenders is heuristisch: companion geeft vaak
+  geen `pubkey_prefix` op channel-events; we pakken "NAAM:" uit de tekst.
+- **RSSI** komt in sommige firmware-versies niet door op channel-events (alleen
+  SNR). UI toont alleen wat aanwezig is.
+- **Bot-cache TTL 30s**: admin-wijzigingen aan bots zijn pas na ≤30s actief.
+- **In-memory sessies**, geen CSRF, geen rate-limiting op `/login`. Acceptabel
+  voor home-LAN, niet voor blootstelling op internet.
+- **`User.allowed_views`** kolom bestaat maar wordt niet via UI beheerd en niet
+  afgedwongen — per-user menu-permissies zijn dus half-af (alleen role-based
+  admin-hide werkt).
+- Geen automated tests.
+
+---
+
+## 7. Dev-workflow
+
+Geen build-step. Na elke wijziging in `web.py` controleren:
+
+```bash
+# Python-syntax van alle modules
+python3 -c "import ast; [ast.parse(open(f).read()) for f in ('gateway.py','db.py','web.py','bot.py')]"
+
+# JS-syntax: extraheer APP_HTML, parse inline <script>-blokken met node
+# (zie de check-snippets in de gespreksgeschiedenis; node --check op de
+#  geëxtraheerde JS — vangt quote-/escape-fouten die Python niet ziet)
+```
+
+Belangrijk bij `APP_HTML`: het is een Python triple-quoted string. JS-strings
+mogen geen kale apostroffen of `\n` bevatten zonder escaping (`\\n`), en
+`{...}` mag niet via `.format()` — gebruik `.replace()` (zie `{VERSION}`,
+`{err}`). Versienummer: bump de **z** in `APP_VERSION` (`web.py`) bij elke
+gevraagde wijziging.
+
+---
+
+## 8. Eerstvolgende stappen (niet gedaan, geprioriteerd)
+
+**Medium — onderhoud/robuustheid:**
+1. `web.py` opsplitsen; `APP_HTML` naar losse static `.html/.css/.js`-files
+   met een echte lint-step. Grootste onderhoudswinst.
+2. Server-side caching van `/admin/state` (wordt nu elke 10-30s opgehaald en
+   doet 5 companion-calls; ook door `refreshHeaderOnly`).
+3. Smoke-tests voor `db.py`-helpers, password-hashing, schema-migraties.
+
+**Functioneel — eerder besproken, uitgesteld:**
+4. Per-user menu-permissies afmaken: UI in Admin → Gebruikers om
+   `allowed_views` te zetten + frontend de tree daarop laten filteren.
+5. QR import/export van contacten (`export_contact`/`import_contact` bestaan
+   al als endpoints in `web.py`, UI is bewust nog niet gebouwd). Camera-scan
+   vereist een externe JS-lib (jsQR).
+6. Mobiel-responsive maken (drie-koloms-layout → één kolom + hamburger;
+   tabellen → kaart-stijl). Ingeschat ~5-7 uur.
+7. Watchdog auto-reconnect bij USB-disconnect (nu alleen waarschuwing).
+
+**Laag — alleen bij groei / minder vertrouwd netwerk:**
+8. CSRF-tokens op admin-POSTs, rate-limiting op `/login`, persistente sessies.
+
+---
+
+&copy; Flight 815 B.V.

@@ -795,16 +795,16 @@ async def public_history_with_tag(tag: str, limit: int = 30) -> list[Message]:
 # ---------------------------------------------------------------------------
 
 async def count_messages_older_than(seconds: int) -> int:
-    """Aantal berichten ouder dan `seconds`."""
+    """Aantal berichten ouder dan `seconds` — server-side COUNT, geen
+    full-table scan in Python."""
     Session = _require_session()
-    cutoff = _utcnow().timestamp() - seconds
+    cutoff_dt = datetime.fromtimestamp(_utcnow().timestamp() - seconds, tz=timezone.utc)
     async with Session() as s:
         from sqlalchemy import func
-        # SQLite stores datetimes as strings; vergelijk via Python-side cutoff
-        # door de hele tabel te scannen — voor onze schaal prima.
-        result = await s.execute(select(Message))
-        rows = result.scalars().all()
-        return sum(1 for m in rows if m.ts.timestamp() < cutoff)
+        result = await s.execute(
+            select(func.count()).select_from(Message).where(Message.ts < cutoff_dt)
+        )
+        return int(result.scalar_one())
 
 
 async def delete_messages_older_than(seconds: int) -> int:
