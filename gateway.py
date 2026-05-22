@@ -195,6 +195,10 @@ async def db_handler(msg: Message) -> None:
 # Adapters: vertalen meshcore events naar IncomingMessage en fire'n -------
 
 async def on_contact_msg(event):
+    # txt_type != 0 = CLI/cmd response e.d. — hou die buiten de DM-historie.
+    txt_type = _extract(event, "txt_type", default=0)
+    if isinstance(txt_type, int) and txt_type != 0:
+        return
     sender = _extract(event, "pubkey_prefix", "from", "src", default=None)
     text = _extract(event, "text", "msg", "message", default="")
     msg = Message(
@@ -422,6 +426,16 @@ from collections import deque as _deque
 
 _recent_rxlogs: _deque = _deque(maxlen=200)
 
+# Tweede ring-buffer: alle RX_LOG_DATA entries (ongeacht payload_typename).
+# Gebruikt door de "ping repeater"-endpoint om SNR-here best-effort op te
+# pikken voor STATUS_RESPONSE packets (die niet als GRP_TXT binnenkomen).
+_recent_rxlogs_all: _deque = _deque(maxlen=200)
+
+
+def get_recent_rxlogs_all() -> list:
+    """Snapshot van de all-payload ring-buffer (oudste eerst)."""
+    return list(_recent_rxlogs_all)
+
 # Pending outgoing channel-msgs voor implicit-ACK detectie.
 # Channel-msgs hebben geen protocol-ack; we detecteren 'mesh-pickup' door
 # tijd-correlatie met inkomende RX_LOG_DATA (GRP_TXT) van repeaters.
@@ -505,10 +519,18 @@ async def on_rx_log_event(event):
     payload = getattr(event, "payload", None)
     if not isinstance(payload, dict):
         return
+    now = _time.time()
+    # All-payload buffer (gebruikt door /admin/repeaters/ping voor SNR-here)
+    _recent_rxlogs_all.append({
+        "ts":              now,
+        "payload_typename": payload.get("payload_typename"),
+        "rssi":            payload.get("rssi"),
+        "snr":             payload.get("snr"),
+        "path_len":        payload.get("path_len"),
+    })
     # Alleen GRP_TXT-payload-type heeft betekenis voor channel-msg-enrichment
     if payload.get("payload_typename") != "GRP_TXT":
         return
-    now = _time.time()
     _recent_rxlogs.append({
         "ts": now,
         "pkt_hash":       payload.get("pkt_hash"),

@@ -35,7 +35,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 # v10: UserContact.pubkey is nu volledige 32-byte hex (64 chars) i.p.v. prefix.
 #      Bestaande user_contacts tabel wordt gedropt en opnieuw aangemaakt.
 # v11: + Bot tabel (admin-defined channel-bots met variable-templates)
-SCHEMA_VERSION = "11"
+# v12: + UserFavoriteRepeater tabel (per-user favoriete repeaters → top van lijst)
+SCHEMA_VERSION = "12"
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +181,18 @@ class UserContact(Base):
     pubkey:     Mapped[str] = mapped_column(String(64), primary_key=True)
     name:       Mapped[str] = mapped_column(String(64), default="")
     notes:      Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
+class UserFavoriteRepeater(Base):
+    """Per web-user gemarkeerde favoriete repeaters/rooms. Wordt in het
+    Repeater-overzicht naar boven gesorteerd. pubkey = volledige 64-char hex
+    (matcht UserContact.pubkey en de companion contacts-keys)."""
+
+    __tablename__ = "user_favorite_repeaters"
+
+    username:   Mapped[str] = mapped_column(String(64), primary_key=True)
+    pubkey:     Mapped[str] = mapped_column(String(64), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
 
@@ -1073,6 +1086,68 @@ async def remove_user_contact(username: str, pubkey: str) -> bool:
         if c is None:
             return False
         await s.delete(c)
+        await s.commit()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# User-favorite-repeaters
+# ---------------------------------------------------------------------------
+
+def _norm_pubkey(pubkey: str) -> str:
+    """Lowercase + strip; valideer 64-char hex."""
+    pk = (pubkey or "").strip().lower()
+    if len(pk) != 64:
+        raise ValueError(f"pubkey moet 64 hex chars zijn, kreeg {len(pk)}")
+    try:
+        bytes.fromhex(pk)
+    except ValueError:
+        raise ValueError("pubkey moet hex zijn")
+    return pk
+
+
+async def list_fav_repeaters(username: str) -> list[str]:
+    """Lijst van pubkey-hexes die deze user als favoriet heeft gemarkeerd."""
+    Session = _require_session()
+    async with Session() as s:
+        result = await s.execute(
+            select(UserFavoriteRepeater.pubkey)
+            .where(UserFavoriteRepeater.username == username)
+        )
+        return [r[0] for r in result.all()]
+
+
+async def all_fav_repeater_pubkeys() -> set[str]:
+    """Set met alle pubkeys die door wélke user dan ook als favoriet zijn
+    gemarkeerd. Gebruikt door housekeeping: zo'n contact mag nooit
+    automatisch worden opgeruimd."""
+    Session = _require_session()
+    async with Session() as s:
+        result = await s.execute(select(UserFavoriteRepeater.pubkey))
+        return {r[0] for r in result.all()}
+
+
+async def add_fav_repeater(username: str, pubkey: str) -> bool:
+    """Markeer als favoriet (idempotent). Returnt True als toegevoegd, False als al aanwezig."""
+    pk = _norm_pubkey(pubkey)
+    Session = _require_session()
+    async with Session() as s:
+        existing = await s.get(UserFavoriteRepeater, (username, pk))
+        if existing is not None:
+            return False
+        s.add(UserFavoriteRepeater(username=username, pubkey=pk))
+        await s.commit()
+    return True
+
+
+async def remove_fav_repeater(username: str, pubkey: str) -> bool:
+    pk = _norm_pubkey(pubkey)
+    Session = _require_session()
+    async with Session() as s:
+        row = await s.get(UserFavoriteRepeater, (username, pk))
+        if row is None:
+            return False
+        await s.delete(row)
         await s.commit()
     return True
 

@@ -34,7 +34,7 @@ import db
 #   x = major (handmatig te bepalen)
 #   y = minor (handmatig te bepalen)
 #   z = dot-versie, bumpt bij elke door de gebruiker gevraagde wijziging
-APP_VERSION = "1.1.010"
+APP_VERSION = "1.1.017"
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +45,12 @@ APP_VERSION = "1.1.010"
 # In-memory; bij gateway-restart moet iedereen opnieuw inloggen.
 _SESSIONS: dict[str, dict] = {}
 COOKIE_NAME = "mc_auth"
+
+# OTA-repeater-management: per (web_username, repeater_pubkey_lower) een sessie
+# met login-tijd en laatste activiteit. In-memory; companion zelf vergeet de
+# sessie ook na inactiviteit (firmware-side), dus dit is best-effort tracking.
+_REPEATER_SESSIONS: dict[tuple[str, str], dict] = {}
+_REPEATER_SESSION_TTL_SECS = 120  # client-zijde verloop-hint (UI mag herloggen)
 
 
 # ---- Password hashing (pbkdf2_sha256, std-lib only) ----
@@ -478,6 +484,15 @@ let STATE = {
   filterText: '',         // huidige tekst-filter (lowercase)
   timeAnchorHours: 0,     // 0 = realtime; >0 = N uur in het verleden
   reportPeriodHours: 24,  // default grafiekperiode
+  // Repeater-rapport: laatst-gefetchte rows + zoektekst (lowercase)
+  repeaterRows: [],
+  repeaterSearch: '',
+  selectedRepeater: null,    // {pubkey, name, type_label} of null
+  repeaterMgmt: {            // UI-state voor het manage-paneel
+    logged_in: false,
+    cli_history: [],         // [{cmd, response, ok}]
+    last_status: null,       // payload van /admin/repeaters/manage_status
+  },
 };
 
 /* ============== helpers ============== */
@@ -802,6 +817,8 @@ async function refreshMyContacts(){
 function selectReport(sub){
   STATE.view = 'reports';
   STATE.reportSub = sub;
+  // Bij wisselen van rapport: repeater-selectie wissen zodat detail-paneel terug naar default gaat
+  STATE.selectedRepeater = null;
   _hideAllViews();
   $('reports-view').style.display = 'block';
   const titles = {overview:'Overzicht', repeaters:'Repeaters'};
@@ -1374,8 +1391,51 @@ function renderAdminHousekeeping(){
       <div class="row"><label>DB-records</label><span id="db-count" class="kv">…</span></div>
       <div class="row" style="margin-top:10px"><label>Verwijder ouder dan</label><input id="hk-age" type="number" placeholder="aantal" style="width:90px"><select id="hk-unit"><option value="86400">dagen</option><option value="3600">uren</option><option value="60">minuten</option></select><button onclick="cleanOlder()" class="danger">Verwijder</button></div>
       <div class="row"><button onclick="cleanAll()" class="danger">Alles verwijderen</button><button onclick="vacuum()">VACUUM</button></div>
+    </section>
+    <section><h2>Stale repeaters opruimen</h2>
+      <div class="note" style="margin-bottom:8px">Verwijdert repeaters en rooms van de companion-contactlijst die meer dan 4 weken geen advert hebben gestuurd. Favorieten worden nooit opgeruimd, ongeacht leeftijd.</div>
+      <div class="row"><button onclick="loadStaleRepeaters()">Toon kandidaten</button></div>
+      <div id="stale-rep-result" style="margin-top:10px"></div>
     </section>`;
   $('db-count').textContent = (s.db?.count ?? '?') + ' berichten';
+}
+
+async function loadStaleRepeaters(){
+  const el = $('stale-rep-result');
+  el.innerHTML = '<div class="kv">…ophalen…</div>';
+  let data;
+  try { data = await api('/admin/repeaters/stale'); } catch(e) { return; }
+  if (!data.count){
+    el.innerHTML = '<div class="kv" style="color:#888">Geen kandidaten — alles is recent gezien of staat als favoriet.</div>';
+    return;
+  }
+  const rows = data.items.map(it => {
+    const lastAdv = it.last_advert ? new Date(it.last_advert * 1000).toLocaleString() : '—';
+    return '<tr>' +
+      '<td>' + escapeHTML(it.name) + '</td>' +
+      '<td>' + it.type_label + '</td>' +
+      '<td><code style="font-size:11px">' + it.pubkey_prefix + '</code></td>' +
+      '<td>' + escapeHTML(lastAdv) + '</td>' +
+      '<td>' + it.age_days + ' d</td>' +
+      '</tr>';
+  }).join('');
+  el.innerHTML = `
+    <div class="kv" style="margin-bottom:6px">${data.count} kandidaten (drempel: ${data.age_days_threshold} dagen).</div>
+    <table style="width:100%">
+      <thead><tr><th>Naam</th><th>Type</th><th>Pubkey-prefix</th><th>Laatste advert</th><th>Leeftijd</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="row" style="margin-top:10px">
+      <button onclick="cleanupStaleRepeaters(${data.count})" class="danger">Verwijder ${data.count} contacten</button>
+    </div>`;
+}
+
+async function cleanupStaleRepeaters(expected){
+  if (!confirm('Verwijder ' + expected + ' stale repeaters/rooms van de companion-contactlijst? Dit is niet ongedaan te maken.')) return;
+  let res;
+  try { res = await api('/admin/repeaters/cleanup', {method:'POST', body:'{}'}); } catch(e) { return; }
+  toast(res.message || 'klaar');
+  loadStaleRepeaters();
 }
 
 function _formatPeriodHours(h){
@@ -1781,7 +1841,51 @@ async function renderReportRepeaters(){
     data = await api('/reports/repeaters');
   } catch(e) { return; }
 
-  const rows = (data.repeaters || []).map(r => {
+  STATE.repeaterRows = data.repeaters || [];
+  const q = (STATE.repeaterSearch || '').toLowerCase();
+  el.innerHTML = `
+    <section><h2>Repeaters &amp; Rooms (${data.count})</h2>
+      <div class="note" style="margin-bottom:8px">Bron: contactenlijst van de companion (alle nodes met type repeater of room-server). Favorieten staan bovenaan.</div>
+      <div class="row" style="margin-bottom:8px">
+        <input id="rep-search" type="text" placeholder="zoek op naam, pubkey of hash…" style="flex:1"
+               value="${escapeHTML(STATE.repeaterSearch || '')}"
+               oninput="filterRepeaterTable(this.value)">
+      </div>
+      <table style="width:100%">
+        <thead><tr>
+          <th style="width:24px"></th>
+          <th>Naam</th><th>Type</th><th>Hash</th><th>Pubkey-prefix</th>
+          <th>Laatste advert</th><th>Locatie</th><th>Path</th>
+          <th>Ping</th>
+        </tr></thead>
+        <tbody id="rep-tbody"></tbody>
+      </table>
+    </section>`;
+  renderRepeaterRows();
+  // Focus terugzetten als er een zoekterm staat, zodat typen niet onderbroken wordt
+  const inp = $('rep-search');
+  if (inp && q) { inp.focus(); inp.setSelectionRange(q.length, q.length); }
+}
+
+function filterRepeaterTable(q){
+  STATE.repeaterSearch = (q || '').toLowerCase();
+  renderRepeaterRows();
+}
+
+function renderRepeaterRows(){
+  const tbody = $('rep-tbody');
+  if (!tbody) return;
+  const q = (STATE.repeaterSearch || '').toLowerCase();
+  const list = (STATE.repeaterRows || []).filter(r => {
+    if (!q) return true;
+    const name = (r.name || '').toLowerCase();
+    const pk   = (r.pubkey || '').toLowerCase();
+    const pref = (r.pubkey_prefix || '').toLowerCase();
+    const h1   = (r.hash_1b || '').toLowerCase();
+    const h2   = (r.hash_2b || '').toLowerCase();
+    return name.includes(q) || pk.includes(q) || pref.includes(q) || h1.includes(q) || h2.includes(q);
+  });
+  const rows = list.map(r => {
     const lastAdv = r.last_advert
       ? new Date(r.last_advert * 1000).toLocaleString()
       : '—';
@@ -1790,7 +1894,20 @@ async function renderReportRepeaters(){
       : '—';
     const hashCell = '<code style="background:#dfeefd;padding:1px 4px;border-radius:3px">'+r.hash_1b+'</code>';
     const opl = (r.out_path_len === -1 || r.out_path_len === 255) ? 'flood' : (r.out_path_len ?? '—');
-    return '<tr>' +
+    const starChar = r.is_favorite ? '★' : '☆';
+    const starTitle = r.is_favorite ? 'verwijder uit favorieten' : 'markeer als favoriet';
+    const starColor = r.is_favorite ? '#e9a300' : '#bbb';
+    const star = '<span class="fav-star" style="cursor:pointer;font-size:16px;color:'+starColor+'" '+
+                 'title="'+starTitle+'" onclick="toggleRepeaterFav(\\''+r.pubkey+'\\','+(r.is_favorite?'true':'false')+')">'+
+                 starChar+'</span>';
+    const pingCellId = 'ping-cell-' + r.pubkey.slice(0, 12);
+    const pingCell = '<button style="padding:2px 8px;font-size:12px" onclick="event.stopPropagation();pingRepeater(\\''+r.pubkey+'\\')">ping</button> ' +
+                     '<span id="'+pingCellId+'" style="font-size:11px;color:#666;margin-left:4px"></span>';
+    const isSel = (STATE.selectedRepeater && STATE.selectedRepeater.pubkey === r.pubkey);
+    const rowStyle = isSel ? ' style="background:#e8f1ff;cursor:pointer" ' : ' style="cursor:pointer" ';
+    const escName = (r.name || '?').replace(/"/g,'&quot;').replace(/\\\\/g,'\\\\\\\\').replace(/'/g,"\\\\'");
+    return '<tr' + rowStyle + 'onclick="selectRepeater(\\''+r.pubkey+'\\',\\''+escName+'\\',\\''+r.type_label+'\\')">' +
+      '<td style="text-align:center" onclick="event.stopPropagation()">' + star + '</td>' +
       '<td>' + escapeHTML(r.name || '?') + '</td>' +
       '<td>' + r.type_label + '</td>' +
       '<td>' + hashCell + '</td>' +
@@ -1798,20 +1915,296 @@ async function renderReportRepeaters(){
       '<td>' + escapeHTML(lastAdv) + '</td>' +
       '<td>' + escapeHTML(loc) + '</td>' +
       '<td>' + opl + '</td>' +
+      '<td>' + pingCell + '</td>' +
       '</tr>';
   }).join('');
+  const empty = q
+    ? '<tr><td colspan="9" style="color:#888">geen repeaters die matchen op &laquo;'+escapeHTML(q)+'&raquo;</td></tr>'
+    : '<tr><td colspan="9" style="color:#888">geen bekende repeaters — wacht tot er adverts binnenkomen</td></tr>';
+  tbody.innerHTML = rows || empty;
+}
 
-  el.innerHTML = `
-    <section><h2>Repeaters & Rooms (${data.count})</h2>
-      <div class="note" style="margin-bottom:8px">Bron: contactenlijst van de companion (alle nodes met type repeater of room-server).</div>
-      <table style="width:100%">
-        <thead><tr>
-          <th>Naam</th><th>Type</th><th>Hash</th><th>Pubkey-prefix</th>
-          <th>Laatste advert</th><th>Locatie</th><th>Path</th>
-        </tr></thead>
-        <tbody>${rows || '<tr><td colspan="7" style="color:#888">geen bekende repeaters — wacht tot er adverts binnenkomen</td></tr>'}</tbody>
-      </table>
-    </section>`;
+async function pingRepeater(pubkey){
+  const cellId = 'ping-cell-' + pubkey.slice(0, 12);
+  const cell = $(cellId);
+  if (cell) cell.innerHTML = '<span style="color:#888">…pinging…</span>';
+  let res;
+  try {
+    res = await api('/admin/repeaters/ping', {method:'POST', body: JSON.stringify({pubkey: pubkey})});
+  } catch(e) {
+    if (cell) cell.innerHTML = '<span style="color:#c33">✗ fout</span>';
+    return;
+  }
+  if (!cell) return;
+  const fmtSnr = v => (typeof v === 'number') ? (v.toFixed(1) + 'dB') : '—';
+  if (res.status === 'ok') {
+    cell.innerHTML =
+      '<span style="color:#28a745">✓</span> ' + res.duration_ms + 'ms ' +
+      '<span title="SNR zoals door de remote gerapporteerd (onze packet bij hun)">there:' + fmtSnr(res.snr_there) + '</span> ' +
+      '<span title="SNR waarmee onze companion de respons ontving (best-effort)">here:' + fmtSnr(res.snr_here) + '</span>';
+  } else if (res.status === 'no_response') {
+    cell.innerHTML = '<span style="color:#c33">✗ timeout</span> ' + res.duration_ms + 'ms';
+  } else {
+    cell.innerHTML = '<span style="color:#c33">✗ ' + escapeHTML(res.error || res.status || 'fout') + '</span>';
+  }
+}
+
+function selectRepeater(pubkey, name, typeLabel){
+  STATE.selectedRepeater = {pubkey: pubkey, name: name, type_label: typeLabel};
+  // Reset manage-state per nieuwe selectie
+  STATE.repeaterMgmt = {logged_in: false, cli_history: [], last_status: null};
+  renderRepeaterRows();   // herteken voor de selectie-highlight
+  renderDetail();
+  // Vraag eventuele bestaande sessie-status op (na restart geldt sowieso niets)
+  refreshRepeaterSession();
+}
+
+async function refreshRepeaterSession(){
+  if (!STATE.selectedRepeater) return;
+  let s;
+  try {
+    s = await api('/admin/repeaters/session?pubkey=' + encodeURIComponent(STATE.selectedRepeater.pubkey));
+  } catch(e) { return; }
+  STATE.repeaterMgmt.logged_in = !!s.logged_in;
+  renderDetail();
+}
+
+async function repeaterLogin(){
+  if (!STATE.selectedRepeater) return;
+  const pwd = $('rep-mgmt-pw').value || '';
+  if (!pwd){ toast('wachtwoord vereist', 'err'); return; }
+  $('rep-mgmt-login-status').textContent = '…inloggen…';
+  let res;
+  try {
+    res = await api('/admin/repeaters/login', {method:'POST',
+      body: JSON.stringify({pubkey: STATE.selectedRepeater.pubkey, password: pwd})});
+  } catch(e) { return; }
+  if (res.ok){
+    STATE.repeaterMgmt.logged_in = true;
+    $('rep-mgmt-pw').value = '';
+    toast(res.message || 'ingelogd');
+  } else {
+    STATE.repeaterMgmt.logged_in = false;
+    $('rep-mgmt-login-status').textContent = res.message || res.status || 'mislukt';
+  }
+  renderDetail();
+}
+
+async function repeaterLogout(){
+  if (!STATE.selectedRepeater) return;
+  try {
+    await api('/admin/repeaters/logout', {method:'POST',
+      body: JSON.stringify({pubkey: STATE.selectedRepeater.pubkey})});
+  } catch(e) { /* hard close lokaal */ }
+  STATE.repeaterMgmt.logged_in = false;
+  STATE.repeaterMgmt.last_status = null;
+  renderDetail();
+}
+
+function _fmtUptime(secs){
+  if (typeof secs !== 'number' || secs < 0) return '—';
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (d > 0) return d + 'd ' + h + 'h ' + m + 'm';
+  if (h > 0) return h + 'h ' + m + 'm';
+  return m + 'm';
+}
+
+async function repeaterRequestStatus(){
+  if (!STATE.selectedRepeater) return;
+  $('rep-mgmt-status-box').innerHTML = '<div class="kv">…opvragen…</div>';
+  let res;
+  try {
+    res = await api('/admin/repeaters/manage_status', {method:'POST',
+      body: JSON.stringify({pubkey: STATE.selectedRepeater.pubkey})});
+  } catch(e) { return; }
+  STATE.repeaterMgmt.last_status = res;
+  renderDetail();
+}
+
+async function repeaterAction(cmd, label, confirmMsg){
+  if (!STATE.selectedRepeater) return;
+  if (confirmMsg && !confirm(confirmMsg)) return;
+  // Voer 'm uit alsof het een CLI-commando is, zodat de respons in dezelfde
+  // history-lijst terechtkomt en je achteraf kunt zien wat er teruggekomen is.
+  STATE.repeaterMgmt.cli_history.push({cmd: '['+label+'] ' + cmd, response: '…wachten…', ok: null});
+  renderDetail();
+  let res;
+  try {
+    res = await api('/admin/repeaters/cmd', {method:'POST',
+      body: JSON.stringify({pubkey: STATE.selectedRepeater.pubkey, cmd: cmd})});
+  } catch(e) {
+    const h = STATE.repeaterMgmt.cli_history[STATE.repeaterMgmt.cli_history.length-1];
+    h.response = '(fout)'; h.ok = false;
+    renderDetail(); return;
+  }
+  const h = STATE.repeaterMgmt.cli_history[STATE.repeaterMgmt.cli_history.length-1];
+  if (res.ok) {
+    h.response = res.response || '(leeg / accepted)';
+    h.ok = true;
+  } else {
+    h.response = res.error || res.message || res.status || 'fout';
+    h.ok = false;
+    if (res.status === 'not_logged_in') STATE.repeaterMgmt.logged_in = false;
+  }
+  renderDetail();
+}
+
+function repeaterSyncTime(){
+  // Repeater-firmware accepteert 'time <epoch_seconds>' direct.
+  // (meshcore-cli's 'clock sync' is een alias die intern dit commando bouwt.)
+  const epoch = Math.floor(Date.now() / 1000);
+  repeaterAction('time ' + epoch, 'sync tijd', null);
+}
+
+function repeaterSendAdvert(){
+  repeaterAction('advert', 'flood advert', null);
+}
+
+function repeaterReboot(){
+  repeaterAction('reboot', 'reboot', 'Repeater echt herstarten? De radio is daarna kort niet bereikbaar en je sessie wordt verbroken.');
+}
+
+async function repeaterRunCli(){
+  if (!STATE.selectedRepeater) return;
+  const inp = $('rep-mgmt-cli-input');
+  const cmd = (inp.value || '').trim();
+  if (!cmd) return;
+  inp.value = '';
+  STATE.repeaterMgmt.cli_history.push({cmd: cmd, response: '…wachten…', ok: null});
+  renderDetail();
+  let res;
+  try {
+    res = await api('/admin/repeaters/cmd', {method:'POST',
+      body: JSON.stringify({pubkey: STATE.selectedRepeater.pubkey, cmd: cmd})});
+  } catch(e) {
+    const h = STATE.repeaterMgmt.cli_history[STATE.repeaterMgmt.cli_history.length-1];
+    h.response = '(fout)'; h.ok = false;
+    renderDetail(); return;
+  }
+  const h = STATE.repeaterMgmt.cli_history[STATE.repeaterMgmt.cli_history.length-1];
+  if (res.ok) {
+    h.response = res.response || '(leeg)';
+    h.ok = true;
+  } else {
+    h.response = res.error || res.message || res.status || 'fout';
+    h.ok = false;
+    if (res.status === 'not_logged_in') STATE.repeaterMgmt.logged_in = false;
+  }
+  renderDetail();
+}
+
+function renderRepeaterManage(){
+  const r = STATE.selectedRepeater;
+  if (!r) return '';
+  const mgmt = STATE.repeaterMgmt || {};
+  const st = mgmt.last_status;
+
+  // 1) Repeater-header (compact, geen knoppen)
+  const headerBlock =
+    '<div class="detail-section"><h3>Repeater</h3>' +
+      '<div class="kv">' +
+        '<div><span class="k">naam:</span>' + escapeHTML(r.name || '?') + '</div>' +
+        '<div><span class="k">type:</span>' + escapeHTML(r.type_label || '?') + '</div>' +
+        '<div><span class="k">pubkey:</span><code style="font-size:11px">' + escapeHTML(r.pubkey.slice(0,16)) + '…</code></div>' +
+      '</div>' +
+    '</div>';
+
+  // 2) Login/Logout-blok bovenaan
+  let loginBlock;
+  if (!mgmt.logged_in) {
+    loginBlock =
+      '<div class="detail-section"><h3>Login</h3>' +
+        '<div class="row"><input id="rep-mgmt-pw" type="password" placeholder="admin-wachtwoord" style="flex:1" autocomplete="off">' +
+        '<button onclick="repeaterLogin()">manage</button></div>' +
+        '<div id="rep-mgmt-login-status" class="note" style="margin-top:6px;color:#c33"></div>' +
+      '</div>';
+  } else {
+    loginBlock =
+      '<div class="detail-section"><h3>Ingelogd</h3>' +
+        '<div class="row"><button onclick="repeaterLogout()" class="sec">logout</button></div>' +
+      '</div>';
+  }
+
+  // 3) Status-blok (knop + resultaat). Werkt alleen zinvol na login.
+  let statusInner;
+  if (st && st.ok) {
+    const bootDate = st.boot_time ? new Date(st.boot_time * 1000).toLocaleString() : '—';
+    statusInner = '<div class="kv">' +
+      '<div><span class="k">naam:</span>' + escapeHTML(st.name || r.name || '?') + '</div>' +
+      '<div><span class="k">batterij:</span>' + (st.bat != null ? (st.bat + ' mV') : '—') + '</div>' +
+      '<div><span class="k">uptime:</span>' + _fmtUptime(st.uptime) + '</div>' +
+      '<div><span class="k">boot-tijd:</span>' + escapeHTML(bootDate) + '</div>' +
+      '<div><span class="k">lokale tijd:</span>' + escapeHTML(st.remote_clock_text || (mgmt.logged_in ? '(geen \\'clock\\'-respons)' : '— (login vereist)')) + '</div>' +
+      '</div>';
+  } else if (st && !st.ok) {
+    statusInner = '<div class="kv" style="color:#c33">fout: ' + escapeHTML(st.error || 'onbekend') + '</div>';
+  } else {
+    statusInner = '<div class="kv" style="color:#888">— nog niet opgevraagd —</div>';
+  }
+  const statusBtnDisabled = mgmt.logged_in ? '' : ' disabled title="login eerst" style="opacity:0.5;cursor:not-allowed"';
+  const statusBlock =
+    '<div id="rep-mgmt-status-box" class="detail-section"><h3>Status</h3>' +
+      '<div class="row" style="margin-bottom:8px"><button onclick="repeaterRequestStatus()"' + statusBtnDisabled + '>request status</button></div>' +
+      statusInner +
+    '</div>';
+
+  // 4) Acties-blok (alleen als ingelogd) — snelknoppen voor veelgebruikte commando's
+  let actionsBlock = '';
+  if (mgmt.logged_in) {
+    actionsBlock =
+      '<div class="detail-section"><h3>Acties</h3>' +
+        '<div class="row" style="flex-wrap:wrap;gap:6px">' +
+          '<button onclick="repeaterSyncTime()" title="stuur huidige browser-tijd naar de repeater">sync tijd</button>' +
+          '<button onclick="repeaterSendAdvert()" title="laat de repeater een flood-advert versturen">advert</button>' +
+          '<button onclick="repeaterReboot()" class="danger" title="repeater herstarten">reboot</button>' +
+        '</div>' +
+        '<div class="note" style="margin-top:6px">De daadwerkelijke commando\\'s en hun respons verschijnen in de CLI-history hieronder.</div>' +
+      '</div>';
+  }
+
+  // 5) CLI-blok (alleen tonen als ingelogd)
+  let cliBlock = '';
+  if (mgmt.logged_in) {
+    const cliRows = (mgmt.cli_history || []).map(h => {
+      const color = h.ok === false ? '#c33' : (h.ok === true ? '#28a745' : '#888');
+      return '<div style="margin-bottom:8px;padding:6px;background:#f7f7f7;border-radius:4px">' +
+             '<div style="font-family:monospace;font-size:12px">&gt; ' + escapeHTML(h.cmd) + '</div>' +
+             '<pre style="margin:4px 0 0 0;font-size:11px;color:'+color+';white-space:pre-wrap;word-break:break-word">' +
+                escapeHTML(h.response) + '</pre></div>';
+    }).join('');
+    cliBlock =
+      '<div class="detail-section"><h3>CLI</h3>' +
+        '<div style="max-height:240px;overflow-y:auto;margin-bottom:6px">' + (cliRows || '<div class="kv" style="color:#888">geen commando\\'s verzonden</div>') + '</div>' +
+        '<div class="row"><input id="rep-mgmt-cli-input" type="text" placeholder="commando, bv. clock" style="flex:1;font-family:monospace" onkeydown="if(event.key===\\'Enter\\'){event.preventDefault();repeaterRunCli();}">' +
+        '<button onclick="repeaterRunCli()">run</button></div>' +
+        '<div class="note" style="margin-top:6px">Antwoorden komen via een DM-respons; timeout 12s. Veelgebruikt: <code>clock</code>, <code>get name</code>, <code>advert</code>, <code>reboot</code>.</div>' +
+      '</div>';
+  }
+
+  return headerBlock + loginBlock + statusBlock + actionsBlock + cliBlock;
+}
+
+async function toggleRepeaterFav(pubkey, isFav){
+  try {
+    if (isFav) {
+      await api('/reports/repeaters/favorites/' + encodeURIComponent(pubkey), {method:'DELETE'});
+    } else {
+      await api('/reports/repeaters/favorites', {method:'POST', body: JSON.stringify({pubkey: pubkey})});
+    }
+  } catch(e) { return; }
+  // Update local state + re-sort (favorieten eerst, dan type, dan naam)
+  const row = (STATE.repeaterRows || []).find(r => r.pubkey === pubkey);
+  if (row) row.is_favorite = !isFav;
+  STATE.repeaterRows.sort((a,b) => {
+    const fa = a.is_favorite ? 0 : 1, fb = b.is_favorite ? 0 : 1;
+    if (fa !== fb) return fa - fb;
+    const ta = a.type || 99, tb = b.type || 99;
+    if (ta !== tb) return ta - tb;
+    return (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+  });
+  renderRepeaterRows();
 }
 
 function renderAdminUsers(){
@@ -2010,6 +2403,12 @@ function renderDetail(){
         <h3>raw payload</h3>
         <div class="msg-quote" style="font-size:11px">${escapeHTML(typeof m.raw === 'string' ? m.raw : JSON.stringify(m.raw, null, 2))}</div>
       </div>`;
+    return;
+  }
+
+  // 2a) Reports + repeater geselecteerd → manage-paneel
+  if (STATE.view === 'reports' && STATE.reportSub === 'repeaters' && STATE.selectedRepeater) {
+    el.innerHTML = renderRepeaterManage();
     return;
   }
 
@@ -2806,6 +3205,9 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
     @app.get("/reports/repeaters")
     async def reports_repeaters(request: Request):
         _auth_or_401(request)
+        sess = _session_from_request(request) or {}
+        username = sess.get("username") or ""
+        favs = set(await db.list_fav_repeaters(username)) if username else set()
         contacts = getattr(mc, "contacts", None) or {}
         items = []
         for pk_hex, c in contacts.items():
@@ -2815,6 +3217,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             # Filter: alleen repeaters / room-servers (type 2 of 3)
             if ctype not in (2, 3):
                 continue
+            pk_lower = pk_hex.lower()
             items.append({
                 "pubkey": pk_hex,
                 "pubkey_prefix": pk_hex[:12],
@@ -2827,9 +3230,52 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
                 "lat": c.get("adv_lat") if isinstance(c, dict) else None,
                 "lon": c.get("adv_lon") if isinstance(c, dict) else None,
                 "out_path_len": c.get("out_path_len") if isinstance(c, dict) else None,
+                "is_favorite": pk_lower in favs,
             })
-        items.sort(key=lambda x: (x["type"] or 99, (x.get("name") or "").lower()))
+        # Favorieten eerst, daarna type (clients/repeaters/rooms), dan naam.
+        items.sort(key=lambda x: (
+            0 if x["is_favorite"] else 1,
+            x["type"] or 99,
+            (x.get("name") or "").lower(),
+        ))
         return {"count": len(items), "repeaters": items}
+
+    @app.get("/reports/repeaters/favorites")
+    async def reports_repeaters_favs_list(request: Request):
+        _auth_or_401(request)
+        sess = _session_from_request(request) or {}
+        username = sess.get("username") or ""
+        favs = await db.list_fav_repeaters(username) if username else []
+        return {"favorites": favs}
+
+    @app.post("/reports/repeaters/favorites")
+    async def reports_repeaters_favs_add(request: Request, payload: dict):
+        _auth_or_401(request)
+        sess = _session_from_request(request) or {}
+        username = sess.get("username") or ""
+        if not username:
+            raise HTTPException(401, "geen sessie")
+        pubkey = (payload.get("pubkey") or "").strip().lower()
+        if not pubkey:
+            raise HTTPException(400, "pubkey vereist")
+        try:
+            added = await db.add_fav_repeater(username, pubkey)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "added": added}
+
+    @app.delete("/reports/repeaters/favorites/{pubkey}")
+    async def reports_repeaters_favs_del(request: Request, pubkey: str):
+        _auth_or_401(request)
+        sess = _session_from_request(request) or {}
+        username = sess.get("username") or ""
+        if not username:
+            raise HTTPException(401, "geen sessie")
+        try:
+            removed = await db.remove_fav_repeater(username, pubkey)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"ok": True, "removed": removed}
 
     # ---------- Hashtags --------------------------------------------------
 
@@ -2991,6 +3437,329 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
         except Exception as e:  # noqa: BLE001
             raise HTTPException(500, f"remove_contact faalde: {e}")
         return {"ok": True, "result": str(res), "message": f"contact {key[:12]} verwijderd"}
+
+    # Housekeeping: vergeet stale repeaters/rooms (>28d niet gezien én geen favoriet)
+    STALE_REPEATER_AGE_SECS = 28 * 86400
+
+    async def _stale_repeater_candidates():
+        """Bouwt de lijst kandidaten op (type 2|3, geen favoriet, last_advert
+        bekend én ouder dan de drempel). Returnt list[dict] met de velden die
+        de UI nodig heeft."""
+        contacts = getattr(mc, "contacts", None) or {}
+        favs = await db.all_fav_repeater_pubkeys()
+        now_ts = _time.time()
+        out = []
+        for pk_hex, c in contacts.items():
+            if not isinstance(pk_hex, str) or not pk_hex:
+                continue
+            if not isinstance(c, dict):
+                continue
+            ctype = c.get("type")
+            if ctype not in (2, 3):
+                continue
+            if pk_hex.lower() in favs:
+                continue
+            last_adv = c.get("last_advert")
+            if not isinstance(last_adv, (int, float)) or last_adv <= 0:
+                # Onbekend → laat staan (veiliger)
+                continue
+            age = now_ts - last_adv
+            if age <= STALE_REPEATER_AGE_SECS:
+                continue
+            out.append({
+                "pubkey": pk_hex,
+                "pubkey_prefix": pk_hex[:12],
+                "name": c.get("adv_name") or "?",
+                "type": ctype,
+                "type_label": "repeater" if ctype == 2 else "room",
+                "last_advert": last_adv,
+                "age_days": round(age / 86400, 1),
+            })
+        out.sort(key=lambda x: x["last_advert"])  # oudste eerst
+        return out
+
+    @app.get("/admin/repeaters/stale")
+    async def admin_repeaters_stale(request: Request):
+        _admin_or_403(request)
+        items = await _stale_repeater_candidates()
+        return {
+            "count": len(items),
+            "age_days_threshold": STALE_REPEATER_AGE_SECS // 86400,
+            "items": items,
+        }
+
+    @app.post("/admin/repeaters/cleanup")
+    async def admin_repeaters_cleanup(request: Request):
+        _admin_or_403(request)
+        fn = _resolve_cmd("remove_contact")
+        if fn is None:
+            raise HTTPException(501, "remove_contact niet beschikbaar")
+        items = await _stale_repeater_candidates()
+        removed, failed = [], []
+        for it in items:
+            try:
+                await fn(it["pubkey"])
+                removed.append(it["pubkey_prefix"])
+            except Exception as e:  # noqa: BLE001
+                failed.append({"pubkey_prefix": it["pubkey_prefix"], "error": str(e)})
+        return {
+            "ok": True,
+            "removed_count": len(removed),
+            "failed_count": len(failed),
+            "removed": removed,
+            "failed": failed,
+            "message": f"{len(removed)} verwijderd, {len(failed)} mislukt",
+        }
+
+    @app.post("/admin/repeaters/ping")
+    async def admin_repeaters_ping(request: Request, payload: dict):
+        """Stuur een status-request (ping) naar één repeater/room. Meet
+        round-trip en pak SNR-there uit de status-response. SNR-here is
+        best-effort: correleert tijdens de ping-window met de all-payload
+        RX_LOG ring-buffer uit gateway.py."""
+        _admin_or_403(request)
+        pubkey = (payload.get("pubkey") or "").strip().lower()
+        if not pubkey or len(pubkey) != 64:
+            raise HTTPException(400, "geldige 64-char pubkey vereist")
+        # Verifieer dat het contact in de companion-contactlijst zit
+        contacts = getattr(mc, "contacts", None) or {}
+        contact = None
+        for pk_hex, c in contacts.items():
+            if isinstance(pk_hex, str) and pk_hex.lower() == pubkey:
+                contact = c
+                pubkey = pk_hex   # gebruik exacte hex zoals companion 'm kent
+                break
+        if contact is None:
+            raise HTTPException(404, "contact onbekend op companion")
+        fn = _resolve_cmd("req_status_sync")
+        if fn is None:
+            raise HTTPException(501, "req_status_sync niet beschikbaar")
+        # Lazy-import om circulaire import te vermijden
+        import gateway as _gw
+        rx_before_len = len(_gw.get_recent_rxlogs_all())
+        t0 = _time.monotonic()
+        try:
+            res = await fn(contact)
+        except Exception as e:  # noqa: BLE001
+            duration_ms = int((_time.monotonic() - t0) * 1000)
+            return {"status": "error", "duration_ms": duration_ms, "error": str(e)}
+        t1 = _time.monotonic()
+        duration_ms = int((t1 - t0) * 1000)
+        if res is None:
+            return {"status": "no_response", "duration_ms": duration_ms,
+                    "message": f"geen antwoord binnen timeout ({duration_ms} ms)"}
+        # SNR-there / RSSI-there komen uit de remote's status-payload
+        snr_there  = res.get("last_snr") if isinstance(res, dict) else None
+        rssi_there = res.get("last_rssi") if isinstance(res, dict) else None
+        # SNR-here: pak het laatst-toegevoegde rxlog-entry dat in deze window kwam
+        snr_here  = None
+        rssi_here = None
+        try:
+            all_rx = _gw.get_recent_rxlogs_all()
+            newer = all_rx[rx_before_len:]   # entries toegevoegd tijdens ping
+            if newer:
+                latest = newer[-1]
+                snr_here  = latest.get("snr")
+                rssi_here = latest.get("rssi")
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            "status": "ok",
+            "duration_ms": duration_ms,
+            "snr_there":  snr_there,
+            "rssi_there": rssi_there,
+            "snr_here":   snr_here,
+            "rssi_here":  rssi_here,
+        }
+
+    # ---------- OTA repeater-management -----------------------------------
+
+    def _get_repeater_contact(pubkey: str):
+        """Vind een repeater/room in mc.contacts op basis van pubkey (64-char
+        hex). Returnt (contact_dict, full_hex) of (None, None)."""
+        pk = (pubkey or "").strip().lower()
+        if len(pk) != 64:
+            return None, None
+        contacts = getattr(mc, "contacts", None) or {}
+        for pk_hex, c in contacts.items():
+            if isinstance(pk_hex, str) and pk_hex.lower() == pk:
+                ctype = c.get("type") if isinstance(c, dict) else None
+                if ctype in (2, 3):
+                    return c, pk_hex
+        return None, None
+
+    def _rep_session_key(request: Request, pubkey: str):
+        sess = _session_from_request(request) or {}
+        un = sess.get("username") or ""
+        return (un, pubkey.lower())
+
+    def _rep_session_alive(request: Request, pubkey: str) -> bool:
+        key = _rep_session_key(request, pubkey)
+        s = _REPEATER_SESSIONS.get(key)
+        if not s:
+            return False
+        if (_time.time() - s.get("last_activity", 0)) > _REPEATER_SESSION_TTL_SECS:
+            _REPEATER_SESSIONS.pop(key, None)
+            return False
+        return True
+
+    @app.post("/admin/repeaters/login")
+    async def admin_repeaters_login(request: Request, payload: dict):
+        _admin_or_403(request)
+        pubkey = (payload.get("pubkey") or "").strip().lower()
+        password = payload.get("password") or ""
+        contact, pk_hex = _get_repeater_contact(pubkey)
+        if contact is None:
+            raise HTTPException(404, "contact onbekend op companion")
+        fn = _resolve_cmd("send_login_sync")
+        if fn is None:
+            raise HTTPException(501, "send_login_sync niet beschikbaar")
+        try:
+            ev = await fn(contact, password)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(500, f"login faalde: {e}")
+        if ev is None:
+            return {"ok": False, "status": "no_response",
+                    "message": "geen antwoord van repeater (timeout)"}
+        ev_type = getattr(ev, "type", None)
+        ev_type_str = getattr(ev_type, "value", str(ev_type))
+        if ev_type_str == "login_success":
+            payload_data = getattr(ev, "payload", {}) or {}
+            key = _rep_session_key(request, pk_hex)
+            _REPEATER_SESSIONS[key] = {
+                "logged_in_at": _time.time(),
+                "last_activity": _time.time(),
+                "permissions":   payload_data.get("permissions"),
+                "is_admin":      payload_data.get("is_admin"),
+            }
+            return {"ok": True, "status": "logged_in",
+                    "is_admin": payload_data.get("is_admin"),
+                    "permissions": payload_data.get("permissions"),
+                    "message": "ingelogd"}
+        return {"ok": False, "status": ev_type_str or "login_failed",
+                "message": "login geweigerd (verkeerd wachtwoord?)"}
+
+    @app.post("/admin/repeaters/logout")
+    async def admin_repeaters_logout(request: Request, payload: dict):
+        _admin_or_403(request)
+        pubkey = (payload.get("pubkey") or "").strip().lower()
+        contact, pk_hex = _get_repeater_contact(pubkey)
+        key = _rep_session_key(request, pubkey)
+        _REPEATER_SESSIONS.pop(key, None)
+        if contact is not None:
+            fn = _resolve_cmd("send_logout")
+            if fn is not None:
+                try:
+                    await fn(contact)
+                except Exception:  # noqa: BLE001
+                    pass  # lokale sessie is sowieso al weg
+        return {"ok": True, "message": "uitgelogd"}
+
+    @app.get("/admin/repeaters/session")
+    async def admin_repeaters_session(request: Request, pubkey: str):
+        _admin_or_403(request)
+        pubkey = (pubkey or "").strip().lower()
+        alive = _rep_session_alive(request, pubkey)
+        s = _REPEATER_SESSIONS.get(_rep_session_key(request, pubkey)) or {}
+        return {
+            "logged_in": alive,
+            "logged_in_at": s.get("logged_in_at"),
+            "last_activity": s.get("last_activity"),
+            "is_admin": s.get("is_admin"),
+            "ttl_secs": _REPEATER_SESSION_TTL_SECS,
+        }
+
+    async def _send_cli_and_wait(contact, pk_hex: str, cmd: str, timeout: float = 12.0):
+        """Stuur een CLI-commando naar de repeater en wacht op het tekst-antwoord.
+        Returnt (text, error_message). Bij time-out: text=None, error='timeout'."""
+        from meshcore.events import EventType as _EVT
+        send_fn = _resolve_cmd("send_cmd")
+        if send_fn is None:
+            return None, "send_cmd niet beschikbaar"
+        try:
+            res = await send_fn(contact, cmd)
+        except Exception as e:  # noqa: BLE001
+            return None, f"send_cmd faalde: {e}"
+        if res is None:
+            return None, "geen MSG_SENT bevestiging"
+        # Wacht op CONTACT_MSG_RECV van deze repeater (eerste 12 hex chars matchen)
+        prefix = pk_hex[:12].lower()
+        try:
+            ev = await mc.wait_for_event(
+                _EVT.CONTACT_MSG_RECV,
+                attribute_filters={"pubkey_prefix": prefix},
+                timeout=timeout,
+            )
+        except Exception as e:  # noqa: BLE001
+            return None, f"wacht-fout: {e}"
+        if ev is None:
+            return None, "timeout"
+        text = ""
+        pl = getattr(ev, "payload", None)
+        if isinstance(pl, dict):
+            text = pl.get("text") or ""
+        return text, None
+
+    @app.post("/admin/repeaters/cmd")
+    async def admin_repeaters_cmd(request: Request, payload: dict):
+        _admin_or_403(request)
+        pubkey = (payload.get("pubkey") or "").strip().lower()
+        cmd = (payload.get("cmd") or "").strip()
+        if not cmd:
+            raise HTTPException(400, "cmd vereist")
+        if not _rep_session_alive(request, pubkey):
+            return {"ok": False, "status": "not_logged_in",
+                    "message": "niet (meer) ingelogd op deze repeater"}
+        contact, pk_hex = _get_repeater_contact(pubkey)
+        if contact is None:
+            raise HTTPException(404, "contact onbekend op companion")
+        text, err = await _send_cli_and_wait(contact, pk_hex, cmd)
+        # Refresh sessie-activity bij succes
+        if text is not None:
+            _REPEATER_SESSIONS[_rep_session_key(request, pubkey)]["last_activity"] = _time.time()
+            return {"ok": True, "status": "ok", "response": text}
+        return {"ok": False, "status": "error", "response": "", "error": err}
+
+    @app.post("/admin/repeaters/manage_status")
+    async def admin_repeaters_manage_status(request: Request, payload: dict):
+        """Status-overzicht: name (uit contact), bat, uptime, en — indien
+        ingelogd — een best-effort 'clock' CLI-call voor de lokale tijd."""
+        _admin_or_403(request)
+        pubkey = (payload.get("pubkey") or "").strip().lower()
+        contact, pk_hex = _get_repeater_contact(pubkey)
+        if contact is None:
+            raise HTTPException(404, "contact onbekend op companion")
+        fn = _resolve_cmd("req_status_sync")
+        if fn is None:
+            raise HTTPException(501, "req_status_sync niet beschikbaar")
+        try:
+            res = await fn(contact)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+        if res is None:
+            return {"ok": False, "error": "geen antwoord (timeout)"}
+        out = {
+            "ok": True,
+            "name": contact.get("adv_name") if isinstance(contact, dict) else None,
+            "bat":  res.get("bat")    if isinstance(res, dict) else None,
+            "uptime": res.get("uptime") if isinstance(res, dict) else None,
+            "boot_time": None,
+            "remote_clock_text": None,
+            "remote_clock_error": None,
+        }
+        if isinstance(out["uptime"], (int, float)) and out["uptime"] > 0:
+            out["boot_time"] = int(_time.time() - out["uptime"])
+        if _rep_session_alive(request, pubkey):
+            # Best-effort: probeer een paar gangbare CLI-varianten voor de klok
+            for cmd in ("clock", "time"):
+                text, err = await _send_cli_and_wait(contact, pk_hex, cmd, timeout=8.0)
+                if text:
+                    out["remote_clock_text"] = text.strip()
+                    _REPEATER_SESSIONS[_rep_session_key(request, pubkey)]["last_activity"] = _time.time()
+                    break
+                else:
+                    out["remote_clock_error"] = err
+        return out
 
     @app.get("/contacts/export")
     async def contacts_export(request: Request, key: Optional[str] = None):
