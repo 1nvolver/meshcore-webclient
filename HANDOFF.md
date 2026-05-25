@@ -1,6 +1,6 @@
 # Handoff — MeshCore Gateway Web Client
 
-Stand: versie 1.1.010. Deze notitie is bedoeld om het project in een nieuwe
+Stand: versie 1.1.017. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode-bestanden gaan apart mee.
 
 ---
@@ -21,7 +21,7 @@ SQLAlchemy async + aiosqlite, uvicorn. Geen build-step; één venv.
 
 | Bestand | Rol |
 |---|---|
-| `gateway.py` | Entry-point. Connectie + companion-handshake, `Dispatch`-bus, CLI-loop (alleen bij TTY), watchdog, repeater-cache, RX_LOG-enrichment, implicit-ack, `send_and_dispatch()`, per-kanaal flood-scope, webserver-/bot-startup. |
+| `gateway.py` | Entry-point. Connectie + companion-handshake, `Dispatch`-bus, CLI-loop (alleen bij TTY), watchdog, repeater-cache, RX_LOG-enrichment (twee ring-buffers: `_recent_rxlogs` voor GRP_TXT channel-enrichment + `_recent_rxlogs_all` voor o.a. ping SNR-here-correlatie), implicit-ack, `send_and_dispatch()`, per-kanaal flood-scope, `on_contact_msg` filtert `txt_type ≠ 0` (CLI-responses) uit DM-historie, webserver-/bot-startup. |
 | `web.py` | FastAPI + Socket.IO. Bevat **`APP_HTML`** — één grote string met álle HTML/CSS/JS van de single-page-app. Auth (pbkdf2, in-memory sessies), alle REST/socket-endpoints. `APP_VERSION` staat hier bovenaan. |
 | `bot.py` | DB-driven bot-framework. Hooks op de dispatch, leest bots uit DB (TTL-cache 30s), variable-resolver `{TIME}/{UPRADIO}/{UPNODE}/{HELP}`. |
 | `db.py` | SQLAlchemy async, alle modellen + helpers. `SCHEMA_VERSION` + auto-migraties in `init_db()`. |
@@ -54,19 +54,21 @@ SQLAlchemy async + aiosqlite, uvicorn. Geen build-step; één venv.
 
 ---
 
-## 4. DB-schema (`SCHEMA_VERSION = "11"`)
+## 4. DB-schema (`SCHEMA_VERSION = "12"`)
 
 Modellen in `db.py`: `Message`, `Meta`, `Channel`, `Hashtag` (deprecated sinds
-v4), `User`, `UserContact`, `Bot`.
+v4), `User`, `UserContact`, `Bot`, `UserFavoriteRepeater`.
 
 Migratiegeschiedenis: v2 Channel · v3 Hashtag (verlaten) · v4 `Channel.kind` ·
 v5 User · v6 `User.must_change_password` · v7 `Channel.scope` · v8 Message
 ack-tracking (`expected_ack`/`ack_status`/`acked_at`) · v9 UserContact ·
 v10 `UserContact.pubkey` volledige 32-byte hex (tabel gedropt+herbouwd) ·
-v11 Bot.
+v11 Bot · v12 UserFavoriteRepeater (per-user favoriete repeaters/rooms;
+composite-key `username + pubkey`).
 
-`Message.peer` = 12-char pubkey-prefix. `UserContact.pubkey` = volledige
-64-char hex. Die inconsistentie vereist op enkele plekken conversie.
+`Message.peer` = 12-char pubkey-prefix. `UserContact.pubkey` en
+`UserFavoriteRepeater.pubkey` = volledige 64-char hex. Die inconsistentie
+vereist op enkele plekken conversie.
 
 ---
 
@@ -95,6 +97,23 @@ v11 Bot.
 - **DM**: tree-tak met per-user opgeslagen contactpersonen; `✓/⚠`-status of
   de companion de contact kent.
 - **Bots**: admin-defined, reageren alleen op `@[<node-naam>] ?keyword`.
+- **Repeater-rapport**: zoekbalk (filtert op naam/pubkey/hash), per-user
+  favoriet-ster (DB-opslag, bovenaan gesorteerd). Ping-knop per row die
+  `req_status_sync` aanroept en duration + SNR-there (uit status-payload) +
+  SNR-here (best-effort via RX_LOG-buffer-correlatie) toont.
+- **Housekeeping — stale repeaters**: knop in admin → housekeeping toont
+  kandidaten (type 2|3, geen favoriet bij wélke user dan ook,
+  `last_advert > 28d`); na bevestiging verwijderen via `remove_contact`.
+  Drempel staat als constante `STALE_REPEATER_AGE_SECS` in `web.py`.
+- **OTA repeater-management**: vanuit het repeater-rapport een row klikken
+  selecteert 'm; in het detail-paneel verschijnt het Manage-paneel met:
+  login-form (admin-wachtwoord → `send_login_sync`), request-status-knop
+  (`req_status_sync` toont naam/bat/uptime/boot-tijd + optioneel lokale
+  klok als ingelogd), een acties-blok (sync tijd / advert / reboot), en
+  een vrije CLI-tab. Sessie-tracking per (web-user, repeater) in-memory,
+  client-side TTL-hint 120s. Logout via `send_logout`. CLI-responses
+  worden weggevangen uit `on_contact_msg` op basis van `txt_type ≠ 0` zodat
+  ze niet als DM in de historie belanden.
 - **Deployment**: Docker + docker-compose + systemd-template; `--reset-admin`
   is een one-shot zonder USB-claim.
 
@@ -116,6 +135,24 @@ v11 Bot.
 - **`User.allowed_views`** kolom bestaat maar wordt niet via UI beheerd en niet
   afgedwongen — per-user menu-permissies zijn dus half-af (alleen role-based
   admin-hide werkt).
+- **`txt_type ≠ 0` wordt niet meer als DM opgeslagen** (filter in
+  `on_contact_msg`). Reden: CLI-responses van repeaters mogen niet in de
+  DM-historie verschijnen. Als jouw firmware ooit gesigneerde DM's met
+  `txt_type=2` of iets dergelijks stuurt, raken die nu zoek; filter dan
+  specifieker maken (bijv. `in (1, 3)`).
+- **Repeater-ping SNR-here is best-effort**: pakt het laatste rxlog-entry
+  uit `_recent_rxlogs_all` dat tijdens de ping-window arriveerde. Bij druk
+  RF-verkeer kan dat de verkeerde meting zijn.
+- **Repeater OTA-sessie**: lokale TTL is 120s; firmware-side kan korter zijn.
+  Een `not_logged_in`-respons gooit de UI terug op het login-form.
+- **CLI-response-waiter** in `/admin/repeaters/cmd` neemt het eerste
+  `CONTACT_MSG_RECV` van de target-pubkey-prefix binnen 12s. Bij gelijktijdig
+  ander verkeer van diezelfde repeater kan dat het verkeerde antwoord zijn.
+- **Repeater-CLI-syntax**: geverifieerd via meshcore-cli REPEATER_COMMANDS.md:
+  `time <epoch_seconds>` zet de klok (NIET `clock sync <epoch>` — dat is een
+  meshcore-cli alias). `clock` (no args) leest 'm. `advert` doet een
+  flood-advert. `reboot` herstart. Andere parameters (radio/owner/position/
+  region/password) hebben nog geen wrapper-knop; gebruik daarvoor de CLI-tab.
 - Geen automated tests.
 
 ---
@@ -128,9 +165,20 @@ Geen build-step. Na elke wijziging in `web.py` controleren:
 # Python-syntax van alle modules
 python3 -c "import ast; [ast.parse(open(f).read()) for f in ('gateway.py','db.py','web.py','bot.py')]"
 
-# JS-syntax: extraheer APP_HTML, parse inline <script>-blokken met node
-# (zie de check-snippets in de gespreksgeschiedenis; node --check op de
-#  geëxtraheerde JS — vangt quote-/escape-fouten die Python niet ziet)
+# JS-syntax check. BELANGRIJK: APP_HTML is een Python triple-quoted string;
+# raw-regex pakt de bytes vóór Python's escape-interpretatie (\\" blijft \\"
+# i.p.v. \") en levert false-positive syntax errors op. Dus eerst exec()'en:
+python3 <<'EOF' > /tmp/app_inline.js
+import re
+src = open('web.py').read()
+m = re.search(r'^APP_HTML\s*=\s*"""(?:.|\n)*?"""', src, re.M)
+ns = {}
+exec(m.group(0), ns)
+html = ns['APP_HTML']
+scripts = re.findall(r'<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)</script>', html, re.I)
+print('\n//---\n'.join(scripts))
+EOF
+node --check /tmp/app_inline.js
 ```
 
 Belangrijk bij `APP_HTML`: het is een Python triple-quoted string. JS-strings
@@ -160,8 +208,20 @@ gevraagde wijziging.
    tabellen → kaart-stijl). Ingeschat ~5-7 uur.
 7. Watchdog auto-reconnect bij USB-disconnect (nu alleen waarschuwing).
 
+**Repeater-management — Fase B (convenience-forms):**
+8. Wrapper-knoppen/forms voor de overige veelgebruikte CLI-commando's:
+   - Radio-settings (`set radio <freq> <bw> <sf> <cr>`) + tx-power.
+   - Advert-intervallen (auto-flood + zero-hop).
+   - Owner-info (`get name` / `set name X`).
+   - Position (lat/lon).
+   - Admin-wachtwoord wijzigen.
+   - Region-management.
+   Exacte syntax-bron: `meshcore-cli/REPEATER_COMMANDS.md` op GitHub.
+9. Telemetry-paneel via `req_telemetry_sync` (LPP-decoded).
+10. Sessie-keepalive of zichtbare countdown van repeater-login.
+
 **Laag — alleen bij groei / minder vertrouwd netwerk:**
-8. CSRF-tokens op admin-POSTs, rate-limiting op `/login`, persistente sessies.
+11. CSRF-tokens op admin-POSTs, rate-limiting op `/login`, persistente sessies.
 
 ---
 
