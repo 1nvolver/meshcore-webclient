@@ -8,6 +8,7 @@ dependencies = [
     "aiosqlite>=0.19",
     "fastapi>=0.110",
     "greenlet>=3.0",
+    "jinja2>=3.1",
     "meshcore>=1.1",
     "pyserial>=3.5",
     "python-multipart>=0.0.9",

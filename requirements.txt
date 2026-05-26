@@ -7,3 +7,4 @@ fastapi>=0.110
 uvicorn>=0.30
 python-socketio>=5.11
 python-multipart>=0.0.9
+jinja2>=3.1

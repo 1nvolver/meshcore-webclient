@@ -25,6 +25,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 # App-bestanden
 COPY gateway.py web.py bot.py db.py ./
+COPY templates/ ./templates/
+COPY static/ ./static/
 
 # Persistente DB-locatie
 RUN mkdir -p /data && chown -R app:app /data /app

@@ -1,6 +1,6 @@
 # Handoff — MeshCore Gateway Web Client
 
-Stand: versie 1.1.017. Deze notitie is bedoeld om het project in een nieuwe
+Stand: versie 1.1.019. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode-bestanden gaan apart mee.
 
 ---
@@ -22,7 +22,10 @@ SQLAlchemy async + aiosqlite, uvicorn. Geen build-step; één venv.
 | Bestand | Rol |
 |---|---|
 | `gateway.py` | Entry-point. Connectie + companion-handshake, `Dispatch`-bus, CLI-loop (alleen bij TTY), watchdog, repeater-cache, RX_LOG-enrichment (twee ring-buffers: `_recent_rxlogs` voor GRP_TXT channel-enrichment + `_recent_rxlogs_all` voor o.a. ping SNR-here-correlatie), implicit-ack, `send_and_dispatch()`, per-kanaal flood-scope, `on_contact_msg` filtert `txt_type ≠ 0` (CLI-responses) uit DM-historie, webserver-/bot-startup. |
-| `web.py` | FastAPI + Socket.IO. Bevat **`APP_HTML`** — één grote string met álle HTML/CSS/JS van de single-page-app. Auth (pbkdf2, in-memory sessies), alle REST/socket-endpoints. `APP_VERSION` staat hier bovenaan. |
+| `web.py` | FastAPI + Socket.IO. Auth (pbkdf2, in-memory sessies), alle REST/socket-endpoints. `APP_VERSION` staat hier bovenaan. `LOGIN_HTML` en `SETUP_HTML` zijn nog inline (klein, één pagina). De single-page-app is uit `web.py` getrokken naar `templates/index.html` + `static/app.css` + `static/app.js` — `/` rendert via `Jinja2Templates`, `/static` via `StaticFiles`. |
+| `templates/index.html` | Jinja2-template voor de single-page-app. `{{VERSION}}` wordt server-side ingevuld. |
+| `static/app.css` | Alle styling van de SPA (was inline `<style>` in `APP_HTML`). |
+| `static/app.js` | Alle client-JS van de SPA (was inline `<script>` in `APP_HTML`). Linten met `node --check static/app.js`. |
 | `bot.py` | DB-driven bot-framework. Hooks op de dispatch, leest bots uit DB (TTL-cache 30s), variable-resolver `{TIME}/{UPRADIO}/{UPNODE}/{HELP}`. |
 | `db.py` | SQLAlchemy async, alle modellen + helpers. `SCHEMA_VERSION` + auto-migraties in `init_db()`. |
 | `Dockerfile`, `docker-compose.yml`, `.dockerignore` | Container (python:3.12-slim, non-root, USB-device passthrough, `/data`-volume). |
@@ -42,8 +45,10 @@ SQLAlchemy async + aiosqlite, uvicorn. Geen build-step; één venv.
   naar de web-UI. Alle send-paden lopen via `send_and_dispatch()` — één plek.
 - **CLI is bewust minimaal** en draait alléén als `stdin` een TTY is (headless
   detectie — cruciaal voor systemd/Docker, anders sluit de app direct af).
-- **Web-UI is single-page**, alles in `APP_HTML`. Geen framework, geen build.
-  JS-fouten zijn pas zichtbaar bij runtime → zie dev-workflow hieronder.
+- **Web-UI is single-page**, opgesplitst in `templates/index.html` +
+  `static/app.css` + `static/app.js`. Geen framework, geen bundler — browser
+  laadt files direct via FastAPI `StaticFiles`. Versie-substitutie via Jinja2
+  (`{{VERSION}}`). Lint nu direct via `node --check static/app.js`.
 - **Auth**: pbkdf2_sha256, sessies in-memory (restart = opnieuw inloggen).
   Rollen `admin`/`user`; admin-tak in de tree volledig verborgen voor users.
 - **Channels**: slot 0 = Public (vast). Slots 1-7 = `hashtag` (key =
@@ -121,8 +126,9 @@ vereist op enkele plekken conversie.
 
 ## 6. Belangrijke caveats / fragiele plekken
 
-- **`web.py` is enorm** (~3600 regels, alle HTML/CSS/JS inline). Geen linting;
-  bugs (ongematchte quotes, script-load-order) zijn al meermaals voorgekomen.
+- **`web.py`** was eerst ~3600 regels met alle HTML/CSS/JS inline. Sinds
+  v1.1.018 staat de SPA in `templates/index.html` + `static/app.{css,js}` en
+  is `web.py` ~1700 regels Python. Lint loopt nu direct via `node --check`.
 - **RX_LOG → msg-koppeling** en **implicit-ack** zijn tijd-correlatie-heuristieken
   (binnen 10-15s). Bij druk verkeer kan een verkeerd pad/ack matchen.
 - **Naam-parsing** van channel-afzenders is heuristisch: companion geeft vaak
@@ -159,41 +165,34 @@ vereist op enkele plekken conversie.
 
 ## 7. Dev-workflow
 
-Geen build-step. Na elke wijziging in `web.py` controleren:
+Geen build-step. Na elke wijziging controleren:
 
 ```bash
 # Python-syntax van alle modules
 python3 -c "import ast; [ast.parse(open(f).read()) for f in ('gateway.py','db.py','web.py','bot.py')]"
 
-# JS-syntax check. BELANGRIJK: APP_HTML is een Python triple-quoted string;
-# raw-regex pakt de bytes vóór Python's escape-interpretatie (\\" blijft \\"
-# i.p.v. \") en levert false-positive syntax errors op. Dus eerst exec()'en:
-python3 <<'EOF' > /tmp/app_inline.js
-import re
-src = open('web.py').read()
-m = re.search(r'^APP_HTML\s*=\s*"""(?:.|\n)*?"""', src, re.M)
-ns = {}
-exec(m.group(0), ns)
-html = ns['APP_HTML']
-scripts = re.findall(r'<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)</script>', html, re.I)
-print('\n//---\n'.join(scripts))
-EOF
-node --check /tmp/app_inline.js
+# JS-syntax check — sinds v1.1.018 staat alle SPA-JS in static/app.js, dus:
+node --check static/app.js
 ```
 
-Belangrijk bij `APP_HTML`: het is een Python triple-quoted string. JS-strings
-mogen geen kale apostroffen of `\n` bevatten zonder escaping (`\\n`), en
-`{...}` mag niet via `.format()` — gebruik `.replace()` (zie `{VERSION}`,
-`{err}`). Versienummer: bump de **z** in `APP_VERSION` (`web.py`) bij elke
-gevraagde wijziging.
+Sinds v1.1.018 leeft de SPA in `templates/index.html` + `static/app.css` +
+`static/app.js`. Geen Python triple-quoted-string escape-trucs meer; JS mag
+apostroffen en kale `\n` bevatten, en alle `{...}` zijn weer gewoon JS — Jinja2
+gebruikt `{{ ... }}` voor zijn placeholders en grijpt nooit losse `{...}`.
+Versienummer: bump de **z** in `APP_VERSION` (`web.py`) bij elke gevraagde
+wijziging; Jinja2 vult 'm in via `{{VERSION}}` in `templates/index.html`.
+
+`LOGIN_HTML` / `SETUP_HTML` zijn nog inline Python-strings (klein, `{err}` via
+`.replace()`).
 
 ---
 
 ## 8. Eerstvolgende stappen (niet gedaan, geprioriteerd)
 
 **Medium — onderhoud/robuustheid:**
-1. `web.py` opsplitsen; `APP_HTML` naar losse static `.html/.css/.js`-files
-   met een echte lint-step. Grootste onderhoudswinst.
+1. ~~`web.py` opsplitsen~~ — gedaan in v1.1.018 (templates/ + static/, Jinja2).
+   Vervolg: JS modulariseren (auth/tree/chat/admin/repeater/bots/rapportage)
+   nu de lint-loop bestaat. Vóór de mobile-rewrite is dit nog niet kritisch.
 2. Server-side caching van `/admin/state` (wordt nu elke 10-30s opgehaald en
    doet 5 companion-calls; ook door `refreshHeaderOnly`).
 3. Smoke-tests voor `db.py`-helpers, password-hashing, schema-migraties.
