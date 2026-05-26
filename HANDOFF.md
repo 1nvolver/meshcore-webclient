@@ -1,6 +1,6 @@
 # Handoff — MeshCore Gateway Web Client
 
-Stand: versie 1.1.020. Deze notitie is bedoeld om het project in een nieuwe
+Stand: versie 1.1.021. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode-bestanden gaan apart mee.
 
 ---
@@ -25,7 +25,13 @@ SQLAlchemy async + aiosqlite, uvicorn. Geen build-step; één venv.
 | `web.py` | FastAPI + Socket.IO. Auth (pbkdf2, in-memory sessies), alle REST/socket-endpoints. `APP_VERSION` staat hier bovenaan. `LOGIN_HTML` en `SETUP_HTML` zijn nog inline (klein, één pagina). De single-page-app is uit `web.py` getrokken naar `templates/index.html` + `static/app.css` + `static/app.js` — `/` rendert via `Jinja2Templates`, `/static` via `StaticFiles`. |
 | `templates/index.html` | Jinja2-template voor de single-page-app. `{{VERSION}}` wordt server-side ingevuld. |
 | `static/app.css` | Alle styling van de SPA (was inline `<style>` in `APP_HTML`). |
-| `static/app.js` | Alle client-JS van de SPA (was inline `<script>` in `APP_HTML`). Linten met `node --check static/app.js`. |
+| `static/js/01-core.js` | STATE, $/escapeHTML/fmtTs/toast/api, mentions-helpers, layout-helpers (toggleCollapse/Menu/Group/quitApp). Globals voor alle volgende files. |
+| `static/js/02-tree.js` | renderTree/renderDmTree, view-switching (selectChannel, selectAdminView, selectReport, selectContactsManager + helpers). |
+| `static/js/03-chat.js` | Chat-historie, time-nav, pauze, search, msg-bouw/selectie, emoji-picker, hashtag-add/remove, socketio-handlers (`sock.on('msg' ...)`, `'msg-update'`, chat-form submit). |
+| `static/js/04-admin.js` | Alle admin-views (Radio/Node/Channels/Housekeeping/Prefs/Contacts/Bots/Users) + simple setters (setRadio/TxPower/Name/Coords/etc). |
+| `static/js/05-reports.js` | Rapportages-view + complete repeater-management (rapport, ping, login, status, acties, CLI-tab, favorieten). |
+| `static/js/06-detail.js` | Detail-paneel (RSSI/SNR/hops/pad-visualisatie, copy/reply, raw-detail toggle). |
+| `static/js/07-bootstrap.js` | refresh/refreshHeaderOnly/refreshAndRerender, auth/account (loadMe, change-password modals), native notifs, init-call: `loadMe().then(refresh).then(...)` + `setInterval(refresh, 30000)` + `setInterval(refreshHeaderOnly, 10000)`. Laad-volgorde-kritisch — dit moet als laatste. |
 | `bot.py` | DB-driven bot-framework. Hooks op de dispatch, leest bots uit DB (TTL-cache 30s), variable-resolver `{TIME}/{UPRADIO}/{UPNODE}/{HELP}`. |
 | `db.py` | SQLAlchemy async, alle modellen + helpers. `SCHEMA_VERSION` + auto-migraties in `init_db()`. |
 | `Dockerfile`, `docker-compose.yml`, `.dockerignore` | Container (python:3.12-slim, non-root, USB-device passthrough, `/data`-volume). |
@@ -127,8 +133,9 @@ vereist op enkele plekken conversie.
 ## 6. Belangrijke caveats / fragiele plekken
 
 - **`web.py`** was eerst ~3600 regels met alle HTML/CSS/JS inline. Sinds
-  v1.1.018 staat de SPA in `templates/index.html` + `static/app.{css,js}` en
-  is `web.py` ~1700 regels Python. Lint loopt nu direct via `node --check`.
+  v1.1.018 staat de SPA in `templates/index.html` + `static/app.css` +
+  `static/js/01..07-*.js` (v1.1.021 splitste de JS verder op) en is `web.py`
+  ~1700 regels Python. Lint loopt per JS-file direct via `node --check`.
 - **RX_LOG → msg-koppeling** en **implicit-ack** zijn tijd-correlatie-heuristieken
   (binnen 10-15s). Bij druk verkeer kan een verkeerd pad/ack matchen.
 - **Naam-parsing** van channel-afzenders is heuristisch: companion geeft vaak
@@ -171,16 +178,24 @@ Geen build-step. Na elke wijziging controleren:
 # Python-syntax van alle modules
 python3 -c "import ast; [ast.parse(open(f).read()) for f in ('gateway.py','db.py','web.py','bot.py')]"
 
-# JS-syntax check — sinds v1.1.018 staat alle SPA-JS in static/app.js, dus:
-node --check static/app.js
+# JS-syntax check — sinds v1.1.021 staat de SPA-JS in 7 files in static/js/:
+for f in static/js/*.js; do node --check "$f"; done
 ```
 
 Sinds v1.1.018 leeft de SPA in `templates/index.html` + `static/app.css` +
-`static/app.js`. Geen Python triple-quoted-string escape-trucs meer; JS mag
-apostroffen en kale `\n` bevatten, en alle `{...}` zijn weer gewoon JS — Jinja2
-gebruikt `{{ ... }}` voor zijn placeholders en grijpt nooit losse `{...}`.
-Versienummer: bump de **z** in `APP_VERSION` (`web.py`) bij elke gevraagde
-wijziging; Jinja2 vult 'm in via `{{VERSION}}` in `templates/index.html`.
+(sinds v1.1.021) `static/js/01..07-*.js`. De 7 modules zijn **plain scripts**
+(géén ES modules) en worden in volgorde geladen via afzonderlijke
+`<script src>`-tags in `templates/index.html`. Reden: ~80 inline
+`onclick="..."`-handlers in de templates + dynamic HTML vereisen dat
+handler-functies globals zijn — ES modules zouden voor elke handler een
+`window.fn = fn`-shim vereisen. Bootstrap.js (07) moet als laatste: daar
+zitten de `loadMe().then(refresh)`-init + de `setInterval`-loops.
+
+JS mag apostroffen en kale `\n` bevatten, en alle `{...}` zijn gewoon JS —
+Jinja2 gebruikt `{{ ... }}` voor zijn placeholders en grijpt nooit losse
+`{...}`. Versienummer: bump de **z** in `APP_VERSION` (`web.py`) bij elke
+gevraagde wijziging; Jinja2 vult 'm in via `{{VERSION}}` in
+`templates/index.html`.
 
 `LOGIN_HTML` / `SETUP_HTML` zijn nog inline Python-strings (klein, `{err}` via
 `.replace()`).
@@ -190,9 +205,8 @@ wijziging; Jinja2 vult 'm in via `{{VERSION}}` in `templates/index.html`.
 ## 8. Eerstvolgende stappen (niet gedaan, geprioriteerd)
 
 **Medium — onderhoud/robuustheid:**
-1. ~~`web.py` opsplitsen~~ — gedaan in v1.1.018 (templates/ + static/, Jinja2).
-   Vervolg: JS modulariseren (auth/tree/chat/admin/repeater/bots/rapportage)
-   nu de lint-loop bestaat. Vóór de mobile-rewrite is dit nog niet kritisch.
+1. ~~`web.py` opsplitsen~~ — gedaan in v1.1.018 (templates/ + static/, Jinja2)
+   en v1.1.021 (JS opgesplitst in `static/js/01..07-*.js`, plain scripts).
 2. ~~Server-side caching van `/admin/state`~~ — gedaan in v1.1.020.
    TTL `_ADMIN_STATE_CACHE_TTL_SECS = 5.0`, cache wordt automatisch
    geïnvalideerd door een HTTP-middleware na elke succesvolle 2xx-respons op

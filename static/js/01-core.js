@@ -1,0 +1,136 @@
+/* ============== state ============== */
+let STATE = {
+  view: 'chat',           // 'chat' | 'admin' | 'reports'
+  adminSub: 'radio',
+  reportSub: 'overview',
+  channel: {kind:'public', idx:0, name:'Public'},  // ook DM: {kind:'dm', peer, name}
+  channels: [],
+  contacts: [],           // van /contacts (companion-contactenlijst)
+  myContacts: [],         // van /my/contacts (per-user opgeslagen)
+  status: null,
+  selectedMsg: null,
+  me: null,
+  msgIndex: {},
+  // chat-controls
+  paused: false,
+  pendingMsgs: [],        // berichten die binnenkomen tijdens pauze
+  filterText: '',         // huidige tekst-filter (lowercase)
+  timeAnchorHours: 0,     // 0 = realtime; >0 = N uur in het verleden
+  reportPeriodHours: 24,  // default grafiekperiode
+  // Repeater-rapport: laatst-gefetchte rows + zoektekst (lowercase)
+  repeaterRows: [],
+  repeaterSearch: '',
+  selectedRepeater: null,    // {pubkey, name, type_label} of null
+  repeaterMgmt: {            // UI-state voor het manage-paneel
+    logged_in: false,
+    cli_history: [],         // [{cmd, response, ok}]
+    last_status: null,       // payload van /admin/repeaters/manage_status
+  },
+};
+
+/* ============== helpers ============== */
+function $(id){return document.getElementById(id);}
+function escapeHTML(s){return String(s||'').replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[c]);}
+
+/* Server stuurt ISO-UTC timestamps; client formatteert naar lokale tijd. */
+function fmtTs(iso){
+  if (!iso) return '?';
+  // Backward-compat: oude HH:MM:SS strings gewoon teruggeven
+  if (typeof iso === 'string' && iso.length <= 8 && iso.indexOf('T') === -1) return iso;
+  try {
+    const d = new Date(iso);
+    if (isNaN(d)) return iso;
+    return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  } catch(e) { return iso; }
+}
+let _toastTimer = null;
+function toast(msg, cls, durationMs){
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'show' + (cls?' '+cls:'');
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(()=>t.className='', durationMs || 4000);
+}
+
+/* ============== mentions: highlight + sound + toast ============== */
+function isMention(m){
+  const s = STATE.status && STATE.status.node || {};
+  const text = (m.text || '').toLowerCase();
+  if (!text.includes('@[')) return false;
+  if (s.name && text.includes('@[' + String(s.name).toLowerCase() + ']')) return true;
+  if (s.pubkey && text.includes('@[' + String(s.pubkey).toLowerCase() + ']')) return true;
+  return false;
+}
+
+let _audioCtx = null;
+function playMentionBeep(){
+  try {
+    if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _audioCtx;
+    if (ctx.state === 'suspended') ctx.resume();
+    const now = ctx.currentTime;
+    // Twee korte tonen (E5 → A5) voor herkenbare 'ping'
+    [659.25, 880].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      osc.connect(gain); gain.connect(ctx.destination);
+      const start = now + i * 0.12;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.18, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.18);
+      osc.start(start);
+      osc.stop(start + 0.20);
+    });
+  } catch(e) {}
+}
+
+function notifyMention(m){
+  const sender = m._sender || extractSender(m) || '?';
+  const body   = m._body || m.text || '';
+  const short  = body.length > 80 ? body.slice(0, 77) + '…' : body;
+  toast('@' + sender + ' → ' + short, 'mention', 6000);
+  // Native browser-notification als tab op de achtergrond staat
+  showNativeNotification('Mention van ' + sender, body);
+}
+
+function onMention(m){
+  playMentionBeep();
+  notifyMention(m);
+}
+async function api(path, opts){
+  opts = opts || {};
+  opts.headers = Object.assign({'Content-Type':'application/json'}, opts.headers||{});
+  const r = await fetch(path, opts);
+  let body = null;
+  try { body = await r.json(); } catch(e) {}
+  if (!r.ok) {
+    toast((body && body.detail) || ('HTTP '+r.status), 'err');
+    throw new Error(r.status);
+  }
+  return body;
+}
+
+/* ============== layout: collapse + menu + groups ============== */
+function toggleCollapse(which){
+  const pane = $('pane-'+which);
+  pane.classList.toggle('collapsed');
+  // toggle arrow
+  const btn = pane.querySelector('.collapse-toggle');
+  if (which === 'tree') btn.innerHTML = pane.classList.contains('collapsed') ? '&raquo;' : '&laquo;';
+  else                  btn.innerHTML = pane.classList.contains('collapsed') ? '&laquo;' : '&raquo;';
+}
+function toggleGroup(id){ $(id).classList.toggle('folded'); }
+function toggleMenu(e){ e.stopPropagation(); $('user-menu').classList.toggle('show'); }
+document.addEventListener('click', () => $('user-menu').classList.remove('show'));
+
+async function quitApp(){
+  if (!confirm('De gateway helemaal afsluiten? CLI en Web stoppen beide.')) return;
+  try {
+    await api('/admin/quit', {method:'POST', body:'{}'});
+    toast('Gateway sluit af…', 'ok');
+    setTimeout(()=>document.body.innerHTML='<p style="padding:40px;font-family:system-ui">Gateway is afgesloten.</p>', 1500);
+  } catch(e){}
+}
+

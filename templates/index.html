@@ -108,8 +108,18 @@
 
 <div id="toast"></div>
 
-<!-- Socket.IO MOET vóór de inline JS — anders is io() undefined wanneer we hem aanroepen. -->
+<!-- Socket.IO MOET vóór onze JS — anders is io() undefined wanneer chat.js geladen wordt. -->
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 
-<script src="/static/app.js"></script>
+<!-- App-modules: plain scripts, geladen in volgorde. Elke file definieert top-level
+     functies die globals worden; bootstrap.js draait als laatste en kickt de UI op gang.
+     Reden voor plain scripts (geen ES modules): ~80 inline onclick="..."-handlers in
+     templates en dynamic HTML vereisen dat de handler-functies globals zijn. -->
+<script src="/static/js/01-core.js"></script>
+<script src="/static/js/02-tree.js"></script>
+<script src="/static/js/03-chat.js"></script>
+<script src="/static/js/04-admin.js"></script>
+<script src="/static/js/05-reports.js"></script>
+<script src="/static/js/06-detail.js"></script>
+<script src="/static/js/07-bootstrap.js"></script>
 </body></html>
