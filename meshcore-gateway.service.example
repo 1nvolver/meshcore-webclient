@@ -27,8 +27,13 @@ ExecStart=/home/admin/.local/bin/uv run gateway.py # controller het pad waar uv 
 # Alternatief, direct met venv-python:
 # ExecStart=/home/admin/meshcore/webclient/.venv/bin/python gateway.py
 
-Restart=on-failure
+Restart=always
 RestartSec=10
+# Watchdog vraagt zelf een proces-restart aan na ~5 min USB-stilte door met
+# exit-code 75 af te sluiten — `Restart=always` zorgt dat systemd ons dan
+# meteen opnieuw start, zodat de USB-poort opnieuw wordt geopend en de
+# companion auto-detect opnieuw draait. Wijzig WATCHDOG_HARD_FAIL_THRESHOLD
+# via env-var MESHCORE_WATCHDOG_HARD_FAIL als je een andere timeout wil.
 
 # Environment-variabelen (zie README voor de hele lijst)
 Environment="MESHCORE_WEB_HOST=127.0.0.1" # pas aan naar het fixed IP van de host

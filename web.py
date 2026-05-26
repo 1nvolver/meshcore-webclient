@@ -41,7 +41,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 #   x = major (handmatig te bepalen)
 #   y = minor (handmatig te bepalen)
 #   z = dot-versie, bumpt bij elke door de gebruiker gevraagde wijziging
-APP_VERSION = "1.1.019"
+APP_VERSION = "1.1.020"
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +58,22 @@ COOKIE_NAME = "mc_auth"
 # sessie ook na inactiviteit (firmware-side), dus dit is best-effort tracking.
 _REPEATER_SESSIONS: dict[tuple[str, str], dict] = {}
 _REPEATER_SESSION_TTL_SECS = 120  # client-zijde verloop-hint (UI mag herloggen)
+
+# /admin/state cache: endpoint doet meerdere companion-calls (self_info, battery,
+# device_info, node_status) + 2 DB-queries. UI poll't elke 10-30s, dus zonder
+# cache zit de USB-bus onnodig vol. TTL kort houden zodat verse wijzigingen
+# (radio/name/coords/channel) binnen redelijke tijd doorkomen; ?fresh=1 bypassed
+# voor de UI direct na een mutatie.
+_ADMIN_STATE_CACHE_TTL_SECS = 5.0
+_admin_state_cache: dict = {"ts": 0.0, "data": None}
+
+
+def _invalidate_admin_state_cache() -> None:
+    """Forceert de volgende /admin/state-call om verse companion-data te halen.
+    Roep dit aan vanuit endpoints die node/radio/channel-state wijzigen als
+    je niet wil wachten tot de natuurlijke TTL is verlopen."""
+    _admin_state_cache["ts"] = 0.0
+    _admin_state_cache["data"] = None
 
 
 # ---- Password hashing (pbkdf2_sha256, std-lib only) ----
@@ -228,6 +244,19 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
     sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins=[])
     app = FastAPI(docs_url=None, redoc_url=None)
     app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+    # /admin/state-cache automatisch invalideren na een succesvolle admin-mutatie.
+    # Scheelt het handmatig invalideren in elke endpoint — UI ziet wijzigingen
+    # direct na de POST i.p.v. te wachten op de TTL.
+    @app.middleware("http")
+    async def _admin_state_cache_invalidator(request: Request, call_next):
+        response = await call_next(request)
+        if (request.method in ("POST", "PUT", "DELETE", "PATCH")
+                and request.url.path.startswith("/admin/")
+                and request.url.path != "/admin/state"
+                and 200 <= response.status_code < 300):
+            _invalidate_admin_state_cache()
+        return response
 
     # ---------- HTTP routes -----------------------------------------------
 
@@ -1266,8 +1295,15 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
         return {"ok": True, "message": f"tijdelijk ww gezet voor '{username}' — moet bij volgende login zelf nieuw ww kiezen"}
 
     @app.get("/admin/state")
-    async def admin_state(request: Request):
+    async def admin_state(request: Request, fresh: bool = False):
         _auth_or_401(request)
+        # Serve uit cache als binnen TTL en geen ?fresh=1.
+        now_ts = _time.time()
+        cached = _admin_state_cache["data"]
+        if (not fresh
+                and cached is not None
+                and (now_ts - _admin_state_cache["ts"]) < _ADMIN_STATE_CACHE_TTL_SECS):
+            return cached
         info = await _read_self_info()
         battery_mv = await _read_battery()
         dev = await _read_device_info()
@@ -1301,7 +1337,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             battery_mv_eff = battery_mv
         battery_v = round(battery_mv_eff / 1000.0, 3) if isinstance(battery_mv_eff, (int, float)) else None
 
-        return {
+        payload = {
             "node": {
                 "name": info.get("name") if isinstance(info, dict) else None,
                 "pubkey": getattr(gateway_state, "self_pubkey", None),
@@ -1338,6 +1374,9 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             ],
             "db": {"count": count},
         }
+        _admin_state_cache["data"] = payload
+        _admin_state_cache["ts"] = _time.time()
+        return payload
 
     @app.post("/admin/radio")
     async def admin_radio(request: Request, payload: dict):

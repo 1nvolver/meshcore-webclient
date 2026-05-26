@@ -1,6 +1,6 @@
 # Handoff — MeshCore Gateway Web Client
 
-Stand: versie 1.1.019. Deze notitie is bedoeld om het project in een nieuwe
+Stand: versie 1.1.020. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode-bestanden gaan apart mee.
 
 ---
@@ -193,8 +193,13 @@ wijziging; Jinja2 vult 'm in via `{{VERSION}}` in `templates/index.html`.
 1. ~~`web.py` opsplitsen~~ — gedaan in v1.1.018 (templates/ + static/, Jinja2).
    Vervolg: JS modulariseren (auth/tree/chat/admin/repeater/bots/rapportage)
    nu de lint-loop bestaat. Vóór de mobile-rewrite is dit nog niet kritisch.
-2. Server-side caching van `/admin/state` (wordt nu elke 10-30s opgehaald en
-   doet 5 companion-calls; ook door `refreshHeaderOnly`).
+2. ~~Server-side caching van `/admin/state`~~ — gedaan in v1.1.020.
+   TTL `_ADMIN_STATE_CACHE_TTL_SECS = 5.0`, cache wordt automatisch
+   geïnvalideerd door een HTTP-middleware na elke succesvolle 2xx-respons op
+   `POST/PUT/PATCH/DELETE /admin/*` (behalve `/admin/state` zelf). UI mag
+   `?fresh=1` meegeven om de cache te bypassen. Tip bij toekomstige
+   wijzigingen die buiten de admin-routes om de node-state veranderen:
+   `_invalidate_admin_state_cache()` aanroepen.
 3. Smoke-tests voor `db.py`-helpers, password-hashing, schema-migraties.
 
 **Functioneel — eerder besproken, uitgesteld:**
@@ -205,7 +210,15 @@ wijziging; Jinja2 vult 'm in via `{{VERSION}}` in `templates/index.html`.
    vereist een externe JS-lib (jsQR).
 6. Mobiel-responsive maken (drie-koloms-layout → één kolom + hamburger;
    tabellen → kaart-stijl). Ingeschat ~5-7 uur.
-7. Watchdog auto-reconnect bij USB-disconnect (nu alleen waarschuwing).
+7. ~~Watchdog auto-reconnect bij USB-disconnect~~ — gedaan in v1.1.020 als
+   "supervisor-restart". Na `WATCHDOG_HARD_FAIL_THRESHOLD` opeenvolgende
+   mislukte heartbeats (default 5 × 60s ≈ 5 min) zet de watchdog
+   `state.watchdog_restart_requested=True` + `stop.set()`. `main()` exit
+   daarna met code 75 (EX_TEMPFAIL) → systemd `Restart=always` /
+   docker-compose `restart: unless-stopped` brengt 'm opnieuw op. Geen
+   in-place `mc`-reconnect (vereist swap van alle refs in dispatch / bots /
+   webapp — te complex). Drempel overschrijfbaar via env-var
+   `MESHCORE_WATCHDOG_HARD_FAIL`. systemd-template: `Restart=always`.
 
 **Repeater-management — Fase B (convenience-forms):**
 8. Wrapper-knoppen/forms voor de overige veelgebruikte CLI-commando's:

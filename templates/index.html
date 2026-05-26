@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="nl"><head>
+<meta charset="utf-8">
+<title>MeshCore Gateway Web Client</title>
+<link rel="stylesheet" href="/static/app.css"></head>
+<body>
+
+<header>
+  <span class="title" id="conn-title">MeshCore Gateway Web Client</span>
+  <div class="hdr-status" id="hdr-status"></div>
+  <div class="avatar" onclick="toggleMenu(event)" title="account">
+    <svg viewBox="0 0 24 24"><path d="M12 12c2.7 0 5-2.3 5-5s-2.3-5-5-5-5 2.3-5 5 2.3 5 5 5zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>
+    <div class="menu" id="user-menu" onclick="event.stopPropagation()">
+      <a id="menu-username" style="font-weight:600;color:#888;cursor:default" onclick="event.stopPropagation()">…</a>
+      <a onclick="changePasswordPrompt()">Wachtwoord wijzigen</a>
+      <a onclick="location.href='/logout'">Logout</a>
+      <a id="menu-quit" class="danger" onclick="quitApp()" style="display:none">Quit (gateway stoppen)</a>
+    </div>
+  </div>
+</header>
+
+<div class="body">
+
+  <!-- ------ LEFT PANE ------ -->
+  <div class="pane tree" id="pane-tree">
+    <button class="collapse-toggle" onclick="toggleCollapse('tree')" title="inklappen">&laquo;</button>
+    <div class="tree-content">
+      <div class="tree-group" id="grp-chat">
+        <div class="tree-group-h" onclick="toggleGroup('grp-chat')">Chat</div>
+        <ul id="tree-channels"></ul>
+        <div class="tree-add" onclick="promptAddHashtag()">+ hashtag</div>
+      </div>
+      <div class="tree-group" id="grp-dm">
+        <div class="tree-group-h" onclick="toggleGroup('grp-dm')">DM</div>
+        <ul id="tree-dms">
+          <li onclick="selectContactsManager()" id="li-contacts-mgr"
+              style="font-style:italic;color:#888;border-bottom:1px solid #eee;margin-bottom:2px">
+            <span class="label">Contactpersonen</span>
+          </li>
+        </ul>
+      </div>
+      <div class="tree-group" id="grp-reports">
+        <div class="tree-group-h" onclick="toggleGroup('grp-reports')">Rapportages</div>
+        <ul>
+          <li onclick="selectReport('overview')"  data-report="overview">Overzicht</li>
+          <li onclick="selectReport('repeaters')" data-report="repeaters">Repeaters</li>
+        </ul>
+      </div>
+      <div class="tree-group" id="grp-admin" style="display:none">
+        <div class="tree-group-h" onclick="toggleGroup('grp-admin')">Admin</div>
+        <ul>
+          <li onclick="selectAdminView('radio')"        data-sub="radio">Radio</li>
+          <li onclick="selectAdminView('node')"         data-sub="node">Node</li>
+          <li onclick="selectAdminView('prefs')"        data-sub="prefs">Voorkeuren</li>
+          <li onclick="selectAdminView('channels')"     data-sub="channels">Channels</li>
+          <li onclick="selectAdminView('contacts')"     data-sub="contacts">Contacten</li>
+          <li onclick="selectAdminView('bots')"         data-sub="bots">Bots</li>
+          <li onclick="selectAdminView('housekeeping')" data-sub="housekeeping">Housekeeping</li>
+          <li onclick="selectAdminView('users')"        data-sub="users">Gebruikers</li>
+        </ul>
+      </div>
+    </div>
+    <div class="tree-footer">v{{VERSION}}</div>
+  </div>
+
+  <!-- ------ MIDDLE PANE ------ -->
+  <div class="pane main">
+    <div class="view-title" id="view-title">Public</div>
+    <div class="view-content" id="view-content">
+      <!-- Chat view -->
+      <div id="chat-view" style="display:flex;flex-direction:column;height:100%">
+        <div id="chat-controls">
+          <input id="chat-filter" type="text" placeholder="filter op tekst…" autocomplete="off">
+          <button class="cc-btn" onclick="loadOlder()" title="laad oudere berichten">↑ ouder</button>
+          <button class="cc-btn" onclick="shiftTime(-12)">-12u</button>
+          <button class="cc-btn" onclick="shiftTime(-2)">-2u</button>
+          <button class="cc-btn" onclick="shiftTime(2)">+2u</button>
+          <button class="cc-btn" onclick="shiftTime(12)">+12u</button>
+          <button class="cc-btn cc-now" onclick="jumpToNow()">nu</button>
+          <button class="cc-btn cc-pause" id="cc-pause-btn" onclick="togglePause()" title="pauzeer/hervat live updates">⏸</button>
+        </div>
+        <div id="log" style="flex:1;overflow-y:auto"></div>
+        <form id="chat-form">
+          <input id="txt" autocomplete="off" placeholder="Bericht naar Public…" disabled>
+          <button id="emoji-btn" type="button" onclick="toggleEmojiPicker(event)" title="emoji invoegen">&#x1F642;</button>
+          <button id="btn" type="submit" disabled>Stuur</button>
+          <div id="emoji-picker" onclick="event.stopPropagation()">
+            <div class="emoji-grid" id="emoji-grid"></div>
+          </div>
+        </form>
+      </div>
+      <!-- Admin view (hidden by default) -->
+      <div id="admin-view" class="admin-content" style="display:none"></div>
+      <!-- Reports view -->
+      <div id="reports-view" class="admin-content" style="display:none"></div>
+      <!-- Contacten-beheer view (per-user) -->
+      <div id="contacts-view" class="admin-content" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- ------ RIGHT PANE ------ -->
+  <div class="pane detail" id="pane-detail">
+    <button class="collapse-toggle" onclick="toggleCollapse('detail')" title="inklappen">&raquo;</button>
+    <div class="detail-content" id="detail-content">…</div>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+
+<!-- Socket.IO MOET vóór de inline JS — anders is io() undefined wanneer we hem aanroepen. -->
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+
+<script src="/static/app.js"></script>
+</body></html>

@@ -41,6 +41,12 @@ PUBLIC_CHANNEL_IDX = 0
 WATCHDOG_INTERVAL_S = 60.0
 WATCHDOG_TIMEOUT_S = 5.0
 WATCHDOG_FAIL_THRESHOLD = 3   # X mislukte heartbeats achter elkaar → alarm
+# Na zoveel opeenvolgende mislukte heartbeats vraagt de watchdog een proces-restart
+# aan: het is goedkoper en betrouwbaarder om main() af te sluiten met code != 0 en
+# door systemd/docker (Restart=always / restart: unless-stopped) opnieuw te laten
+# starten dan om `mc` in-place te re-initialiseren (dispatch/handlers/bots houden
+# allemaal refs naar dezelfde instance). 5 × 60s ≈ 5 min stilte = restart.
+WATCHDOG_HARD_FAIL_THRESHOLD = int(os.environ.get("MESHCORE_WATCHDOG_HARD_FAIL", "5"))
 
 
 # Globale runtime-state. Klein houden; voor grote dingen → eigen module.
@@ -49,6 +55,10 @@ class GatewayState:
     self_name: Optional[str] = None
     # Sentinel-string zodat 'last_scope is None' = bewust geen scope
     last_scope: object = "__unset__"
+    # True als watchdog een proces-restart heeft aangevraagd (USB stil >X min);
+    # main() leest dit en exit met code 75 zodat supervisor (systemd/docker)
+    # opnieuw start.
+    watchdog_restart_requested: bool = False
 
 
 state = GatewayState()
@@ -844,6 +854,17 @@ async def watchdog(mc, stop: asyncio.Event) -> None:
                     flush=True,
                 )
                 alarmed = True
+            if failures >= WATCHDOG_HARD_FAIL_THRESHOLD:
+                mins = (WATCHDOG_HARD_FAIL_THRESHOLD * WATCHDOG_INTERVAL_S) / 60
+                print(
+                    f"\r[watchdog] companion {mins:.0f} min stil — proces-restart aangevraagd "
+                    f"(supervisor moet ons opnieuw starten).\n> ",
+                    end="",
+                    flush=True,
+                )
+                state.watchdog_restart_requested = True
+                stop.set()
+                return
 
 
 # ---------------------------------------------------------------------------
@@ -1654,6 +1675,12 @@ async def main() -> int:
         except Exception:  # noqa: BLE001
             pass
     await db.close_db()
+    if state.watchdog_restart_requested:
+        # Exit-code 75 (EX_TEMPFAIL) — niet 0, niet 1, signaleert "tijdelijk
+        # probleem, herstart aub". systemd Restart=always én Restart=on-failure
+        # interpreteren dit als reden om opnieuw te starten.
+        print("auto-restart (watchdog).")
+        return 75
     print("doei.")
     return 0
 
