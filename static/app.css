@@ -1,8 +1,14 @@
 *{box-sizing:border-box}
   html,body{height:100%}
+  /* overflow-x:hidden op html is een vangnet tegen onverwachte horizontale
+     overflow van fixed-positioned children (bottom-sheet, drawer) op mobiel. */
+  html{overflow-x:hidden}
   body{font-family:system-ui,sans-serif;margin:0;background:#fafafa;color:#222;display:flex;flex-direction:column;height:100vh;overflow:hidden}
 
   /* ---- header --------------------------------------------------- */
+  /* GEEN overflow:hidden op header — clipt anders het uitgeklapte avatar-menu
+     (position:absolute, top:36px). Title + .hdr-status + .item hebben al hun
+     eigen overflow:hidden+ellipsis, dus tekstoverflow wordt daar al opgevangen. */
   header{height:44px;flex:0 0 44px;background:#2c5;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-weight:600}
   header .title{font-size:0.95em}
   .hdr-status{display:flex;gap:14px;align-items:center;font-size:0.85em;font-weight:400;opacity:0.95}
@@ -123,8 +129,10 @@
   .detail-section h3{margin:0 0 6px;font-size:0.78em;color:#888;text-transform:uppercase;letter-spacing:0.05em}
   .detail-section .kv{font-size:12px}
   .detail-section .kv span.k{width:90px}
-  .detail-actions{display:flex;gap:6px;margin-bottom:10px}
-  .detail-actions button{padding:6px 10px;font:inherit;font-size:0.85em;background:#2c5;color:#fff;border:0;border-radius:4px;cursor:pointer;font-weight:600;flex:1}
+  .detail-actions{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+  /* min-width:0 zodat flex:1 daadwerkelijk onder intrinsic content kan krimpen
+     (default min-width:auto laat flex-items niet kleiner worden dan hun inhoud). */
+  .detail-actions button{padding:6px 10px;font:inherit;font-size:0.85em;background:#2c5;color:#fff;border:0;border-radius:4px;cursor:pointer;font-weight:600;flex:1 1 0;min-width:0}
   .detail-actions button:hover{background:#1b4}
   .detail-actions button.sec{background:#888}
   .detail-actions button.sec:hover{background:#666}
@@ -139,8 +147,10 @@
   .path-row > summary::before{content:"\25B8  ";color:#888}
   .path-row[open] > summary::before{content:"\25BE  "}
   .path-row > summary:hover{background:#f0f0f0}
-  .hop-chain{padding:6px 8px 8px;font-size:11px;line-height:1.9;border-top:1px solid #eee;word-break:break-word}
-  .hop{display:inline-block;padding:1px 6px;border-radius:3px;margin:0 2px;font-family:ui-monospace,monospace;font-size:11px}
+  .hop-chain{padding:6px 8px 8px;font-size:11px;line-height:1.9;border-top:1px solid #eee;word-break:break-word;overflow-wrap:anywhere}
+  /* word-break:break-all zorgt dat lange hostnames als NL-WRM-ZENDMAST.COM
+     binnen een hop-pil afbreken ipv het paneel te laten overflowen. */
+  .hop{display:inline-block;padding:1px 6px;border-radius:3px;margin:0 2px;font-family:ui-monospace,monospace;font-size:11px;max-width:100%;word-break:break-all;vertical-align:top}
   .hop-known{background:#dfeefd;color:#024;font-weight:600;font-family:inherit}
   .hop-unknown{background:#f0f0f0;color:#888}
   .hop-arrow{color:#aaa;margin:0 1px}
@@ -162,3 +172,146 @@
   #toast.err{background:#c33}
   #toast.ok{background:#161}
   #toast.mention{background:#f5b800;color:#222;font-weight:600;border-left:6px solid #c98a00}
+
+  /* ---- mobile-only widgets (verborgen op desktop) ---------------- */
+  /* Hamburger + backdrop + close-detail bestaan altijd in de DOM zodat we
+     niets condionneel hoeven te renderen; media queries hieronder bepalen
+     of ze zichtbaar zijn. Op desktop blijven ze display:none. */
+  .hamburger{display:none;background:transparent;border:0;color:#fff;font-size:1.4em;line-height:1;cursor:pointer;padding:6px 10px;margin-right:6px}
+  .mobile-backdrop{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:90}
+  .mobile-backdrop.show{display:block}
+  /* Backdrop ook tonen wanneer detail-pane open is (op viewports waar 'ie
+     een overlay is — mobile + tablet). Dichtklikken sluit beide. */
+  body.detail-open .mobile-backdrop{display:block}
+  /* Op desktop is .pane.detail in de flex-flow — geen overlay, geen backdrop. */
+  @media (min-width:1200px){
+    body.detail-open .mobile-backdrop{display:none}
+  }
+  .detail-close{display:none;position:absolute;top:6px;right:8px;background:transparent;border:0;font-size:1.5em;line-height:1;color:#666;cursor:pointer;padding:4px 8px;z-index:5}
+  .detail-close:hover{color:#222}
+
+  /* =================================================================
+     RESPONSIVE BREAKPOINTS
+     - Mobile  : <=767px   -> single-column, tree als slide-in drawer,
+                              detail als bottom-sheet
+     - Tablet  : 768-1199  -> tree zichtbaar (smaller), detail als slide-in
+                              vanaf rechts (overlay, niet als pane in flex)
+     - Desktop : >=1200px  -> huidige 3-koloms layout (geen overrides nodig)
+     ================================================================= */
+
+  /* ---- TABLET (768-1199px) ---------------------------------------- */
+  @media (max-width:1199px) and (min-width:768px){
+    .pane.tree{flex:0 0 200px}
+    /* Detail is overlay, niet in de flex-flow */
+    .pane.detail{position:fixed;top:44px;bottom:0;right:0;width:340px;
+                 flex:0 0 auto;border-left:1px solid #ccc;
+                 box-shadow:-4px 0 12px rgba(0,0,0,0.1);
+                 transform:translateX(100%);transition:transform 0.2s ease-out;
+                 z-index:95;background:#f8f8f8}
+    body.detail-open .pane.detail{transform:translateX(0)}
+    .pane.detail .collapse-toggle{display:none}
+    .detail-close{display:block;width:36px;height:36px;background:#fff;
+                  border:1px solid #ccc;border-radius:50%;
+                  box-shadow:0 1px 4px rgba(0,0,0,0.15);
+                  display:flex;align-items:center;justify-content:center}
+    /* Detail-content krijgt extra padding-top zodat de X niet over de
+       eerste action-knoppen valt. */
+    .detail-content{padding-top:52px}
+  }
+
+  /* ---- MOBILE (<=767px) ------------------------------------------- */
+  @media (max-width:767px){
+    header{padding:0 6px}
+    header .title{font-size:0.85em;flex:0 1 auto;max-width:42vw;
+                  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+    /* hdr-status moet kunnen krimpen; items truncen ipv overflowen */
+    .hdr-status{font-size:0.75em;gap:6px;flex:1 1 auto;min-width:0;
+                justify-content:flex-end;overflow:hidden}
+    .hdr-status .item{min-width:0;overflow:hidden;text-overflow:ellipsis;
+                      white-space:nowrap;flex:0 1 auto;max-width:38vw}
+    .hdr-status .lbl{display:none}
+    .hamburger{display:block;flex:0 0 auto}
+    .avatar{flex:0 0 auto}
+  }
+
+  /* ---- PORTRAIT PHONES (<=480px) ----------------------------------
+     Op smalle portrait-phones zijn 3 status-items + title + avatar te druk.
+     Verberg battery + uptime; die zijn in admin/reports te zien. Title en
+     node-name krijgen meer ruimte, geen lelijke ellipsis-cut meer.
+     Breedte-budget op 375px: 12 padding + 36 hamburger + 34 avatar + ~10 gap
+     = ~92px chrome, dus 283px voor title+node. We geven title 40vw=150px en
+     node-name 32vw=120px; samen 270px past + 6px margin-right naar avatar. */
+  @media (max-width:480px){
+    .hdr-status .item:nth-child(2),
+    .hdr-status .item:nth-child(3){display:none}
+    header .title{max-width:40vw}
+    .hdr-status{margin-right:6px}
+    .hdr-status .item:first-child{max-width:32vw}
+
+    /* Tree wordt fixed drawer, off-screen by default */
+    .pane.tree{position:fixed;top:44px;left:0;bottom:0;width:84vw;max-width:320px;
+               flex:0 0 auto;border-right:1px solid #ccc;
+               box-shadow:4px 0 12px rgba(0,0,0,0.2);
+               transform:translateX(-100%);transition:transform 0.2s ease-out;
+               z-index:100;background:#f8f8f8}
+    body.drawer-open .pane.tree{transform:translateX(0)}
+    .pane.tree .collapse-toggle{display:none}
+    .tree-content{font-size:1em;padding:10px 6px}
+    .tree-group-h{padding:12px 12px;font-size:0.95em}
+    .tree-group li{padding:12px 12px 12px 32px;font-size:0.95em;min-height:44px}
+    .tree-add{padding:10px 12px 12px 32px;font-size:0.95em;min-height:40px}
+
+    /* Detail-pane als bottom-sheet, off-screen by default */
+    .pane.detail{position:fixed;top:44px;left:0;right:0;bottom:0;
+                 flex:0 0 auto;border:0;border-top:1px solid #ccc;
+                 box-shadow:0 -4px 12px rgba(0,0,0,0.2);
+                 transform:translateY(100%);transition:transform 0.2s ease-out;
+                 z-index:95;background:#f8f8f8}
+    body.detail-open .pane.detail{transform:translateY(0)}
+    .pane.detail .collapse-toggle{display:none}
+    .detail-close{display:flex;align-items:center;justify-content:center;
+                  width:40px;height:40px;font-size:1.6em;top:8px;right:12px;
+                  background:#fff;border:1px solid #ccc;border-radius:50%;
+                  box-shadow:0 1px 4px rgba(0,0,0,0.15)}
+
+    /* Main pane is altijd volledige breedte op mobile */
+    .pane.main{flex:1 1 100%}
+
+    /* Chat-controls compacter, tap-friendly */
+    #chat-controls{padding:8px 6px;gap:4px}
+    #chat-filter{flex:1 0 100%;padding:8px 10px;font-size:14px}
+    .cc-btn{padding:8px 10px;font-size:13px;min-height:36px}
+
+    /* Chat-form en messages */
+    #log{padding:8px 10px;font-size:13px}
+    #chat-form{padding:6px}
+    #chat-form input{padding:12px;font-size:16px}  /* 16px voorkomt iOS-zoom */
+    #chat-form button{padding:12px 14px}
+    #chat-form button#emoji-btn{padding:10px 12px !important}
+
+    /* Admin/reports: padding losser, tabellen schalen */
+    .admin-content{padding:8px}
+    .admin-content section{padding:10px;margin-bottom:10px}
+    .row{flex-direction:column;align-items:stretch;gap:6px}
+    .row label{flex:none;width:auto}
+    .row input,.row select{font-size:16px;width:100%}
+    .row input[type=number]{width:100%}
+    .row input[type=text]{min-width:0;width:100%}
+    .row button{width:100%;min-height:44px;font-size:15px}
+
+    /* Tabellen -> kaarten op mobile.
+       Werkt door rij = block, cell = block met data-label-prefix. Vereist
+       dat de JS dynamisch gegenereerde tabellen `data-label="Kolomnaam"` op
+       elke <td> zet — dat is een follow-up; voor nu doen we horizontaal
+       scrollbaar als veilige fallback. */
+    table{display:block;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch}
+
+    /* Detail-pane content: meer padding, klikbare items wat groter.
+       padding-top houdt rekening met de drijvende X-knop bovenin. */
+    .detail-content{padding:12px;font-size:0.95em;padding-top:56px}
+    .detail-actions button{min-height:40px;font-size:0.95em}
+
+    /* Avatar-menu blijft werken; positioneer 'r een tikje anders */
+    .avatar{width:34px;height:34px}
+    .menu{right:6px}
+  }

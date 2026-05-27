@@ -100,6 +100,7 @@ function selectChannel(ch){
   loadChatHistory();
   renderTree();
   renderDetail();
+  _maybeCloseDrawerOnNav();
 }
 function _hideAllViews(){
   $('chat-view').style.display = 'none';
@@ -122,6 +123,7 @@ function selectAdminView(sub){
   renderAdmin();
   renderTree();
   renderDetail();
+  _maybeCloseDrawerOnNav();
 }
 
 function selectContactsManager(){
@@ -132,6 +134,7 @@ function selectContactsManager(){
   renderContactsManager();
   renderTree();
   renderDetail();
+  _maybeCloseDrawerOnNav();
 }
 
 async function renderContactsManager(){
@@ -223,4 +226,5 @@ function selectReport(sub){
   renderReports();
   renderTree();
   renderDetail();
+  _maybeCloseDrawerOnNav();
 }

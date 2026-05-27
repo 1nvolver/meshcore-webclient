@@ -1,6 +1,6 @@
 # Handoff — MeshCore Gateway Web Client
 
-Stand: versie 1.1.021. Deze notitie is bedoeld om het project in een nieuwe
+Stand: versie 1.1.028. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode-bestanden gaan apart mee.
 
 ---
@@ -222,8 +222,17 @@ gevraagde wijziging; Jinja2 vult 'm in via `{{VERSION}}` in
 5. QR import/export van contacten (`export_contact`/`import_contact` bestaan
    al als endpoints in `web.py`, UI is bewust nog niet gebouwd). Camera-scan
    vereist een externe JS-lib (jsQR).
-6. Mobiel-responsive maken (drie-koloms-layout → één kolom + hamburger;
-   tabellen → kaart-stijl). Ingeschat ~5-7 uur.
+6. Mobiel-responsive — **fase A gedaan in v1.1.022** (layout-overlay):
+   3 breakpoints (mobile ≤767px, tablet 768-1199, desktop ≥1200). Op mobile:
+   hamburger linksboven → tree als slide-in drawer (84vw, max 320px); detail
+   wordt bottom-sheet die opent bij msg/repeater-select; backdrop sluit
+   drawer. Op tablet: tree zichtbaar smaller (200px), detail als slide-in
+   overlay van rechts (340px). Touch-targets ≥40px, inputs 16px font (geen
+   iOS-zoom). Tabellen: nu nog horizontaal-scrollable als veilige
+   fallback. **Fase B (refinement, todo)**: tabellen → kaart-stijl op mobile
+   (per-rij `data-label="..."`-attributes nodig in dynamische HTML);
+   chat-controls compacter (filter + tijd-knoppen wrappen nu lelijk);
+   admin-forms grondiger; landscape-tablet tweaks.
 7. ~~Watchdog auto-reconnect bij USB-disconnect~~ — gedaan in v1.1.020 als
    "supervisor-restart". Na `WATCHDOG_HARD_FAIL_THRESHOLD` opeenvolgende
    mislukte heartbeats (default 5 × 60s ≈ 5 min) zet de watchdog

@@ -246,6 +246,7 @@ function selectRepeater(pubkey, name, typeLabel){
   STATE.repeaterMgmt = {logged_in: false, cli_history: [], last_status: null};
   renderRepeaterRows();   // herteken voor de selectie-highlight
   renderDetail();
+  openMobileDetail();     // detail-overlay op tablet/mobile
   // Vraag eventuele bestaande sessie-status op (na restart geldt sowieso niets)
   refreshRepeaterSession();
 }

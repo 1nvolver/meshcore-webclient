@@ -263,6 +263,7 @@ function selectMsg(m, el){
   el.classList.add('selected');
   STATE.selectedMsg = m;
   renderDetail();
+  openMobileDetail();  // no-op op desktop; opent overlay op tablet/mobile
 }
 
 /* socketio */

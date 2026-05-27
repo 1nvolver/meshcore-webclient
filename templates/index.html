@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="nl"><head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>MeshCore Gateway Web Client</title>
 <link rel="stylesheet" href="/static/app.css"></head>
 <body>
 
 <header>
+  <button class="hamburger" id="hamburger-btn" onclick="toggleMobileDrawer()" aria-label="menu openen">&#9776;</button>
   <span class="title" id="conn-title">MeshCore Gateway Web Client</span>
   <div class="hdr-status" id="hdr-status"></div>
   <div class="avatar" onclick="toggleMenu(event)" title="account">
@@ -18,6 +20,11 @@
     </div>
   </div>
 </header>
+
+<!-- Backdrop tussen overlay-panes en main: zichtbaar bij body.drawer-open of
+     body.detail-open (op viewports waar detail een overlay is). Klik sluit
+     wat er open is. -->
+<div class="mobile-backdrop" id="mobile-backdrop" onclick="closeMobileOverlays()"></div>
 
 <div class="body">
 
@@ -101,6 +108,8 @@
   <!-- ------ RIGHT PANE ------ -->
   <div class="pane detail" id="pane-detail">
     <button class="collapse-toggle" onclick="toggleCollapse('detail')" title="inklappen">&raquo;</button>
+    <!-- Close-knop is alleen zichtbaar op mobile/tablet (via CSS). Sluit overlay-pane. -->
+    <button class="detail-close" onclick="closeMobileDetail()" aria-label="detail sluiten">&times;</button>
     <div class="detail-content" id="detail-content">…</div>
   </div>
 

@@ -125,6 +125,53 @@ function toggleGroup(id){ $(id).classList.toggle('folded'); }
 function toggleMenu(e){ e.stopPropagation(); $('user-menu').classList.toggle('show'); }
 document.addEventListener('click', () => $('user-menu').classList.remove('show'));
 
+/* ============== mobile drawer + detail-overlay ==============
+   Op mobile (≤767px) is .pane.tree een off-screen drawer (transform).
+   Op tablet+mobile is .pane.detail een off-screen overlay.
+   We togglen body-classes 'drawer-open' en 'detail-open'; CSS doet de
+   rest. Helpers zijn no-ops op desktop omdat de classes geen visueel
+   effect hebben buiten de media queries. */
+function toggleMobileDrawer(){
+  const open = document.body.classList.toggle('drawer-open');
+  $('mobile-backdrop').classList.toggle('show', open);
+}
+function closeMobileDrawer(){
+  document.body.classList.remove('drawer-open');
+  // backdrop alleen verbergen als ook detail dicht is — anders blijft hij
+  // staan voor de detail-overlay.
+  if (!document.body.classList.contains('detail-open')) {
+    $('mobile-backdrop').classList.remove('show');
+  }
+}
+/* Eén handler voor de backdrop: sluit alles wat open is. */
+function closeMobileOverlays(){
+  closeMobileDrawer();
+  closeMobileDetail();
+}
+/* Nav-acties op mobile sluiten de drawer automatisch (anders zit hij in
+   de weg na keuze). Op desktop is dit een no-op want body-class heeft
+   geen visueel effect. */
+function _isMobileViewport(){ return window.matchMedia('(max-width:767px)').matches; }
+function _maybeCloseDrawerOnNav(){ if (_isMobileViewport()) closeMobileDrawer(); }
+
+/* Detail-overlay (tablet en mobile). Op desktop blijft .pane.detail in
+   de flex-flow staan; deze helpers togglen alleen de body-class, dus
+   geen effect daar. */
+function _isOverlayDetailViewport(){ return window.matchMedia('(max-width:1199px)').matches; }
+function openMobileDetail(){
+  if (!_isOverlayDetailViewport()) return;
+  // Niets te tonen? Niet openen — voorkomt lege overlay op kanaal-switch.
+  if (!STATE.selectedMsg && !STATE.selectedRepeater) return;
+  document.body.classList.add('detail-open');
+  $('mobile-backdrop').classList.add('show');
+}
+function closeMobileDetail(){
+  document.body.classList.remove('detail-open');
+  if (!document.body.classList.contains('drawer-open')) {
+    $('mobile-backdrop').classList.remove('show');
+  }
+}
+
 async function quitApp(){
   if (!confirm('De gateway helemaal afsluiten? CLI en Web stoppen beide.')) return;
   try {

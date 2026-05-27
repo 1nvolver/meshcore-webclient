@@ -41,7 +41,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 #   x = major (handmatig te bepalen)
 #   y = minor (handmatig te bepalen)
 #   z = dot-versie, bumpt bij elke door de gebruiker gevraagde wijziging
-APP_VERSION = "1.1.021"
+APP_VERSION = "1.1.028"
 
 
 # ---------------------------------------------------------------------------
@@ -154,14 +154,17 @@ def _is_authed_environ(environ: dict) -> bool:
 LOGIN_HTML = """<!DOCTYPE html>
 <html lang="nl"><head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MeshCore Gateway Web Client — Login</title>
 <style>
   body{font-family:system-ui,sans-serif;max-width:400px;margin:5em auto;padding:1em;background:#f6f6f6}
+  @media (max-width:480px){body{margin:1.5em auto;padding:0.8em}}
   h2{margin-top:0}
   form{background:#fff;padding:1.5em;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}
   label{display:block;margin-bottom:0.5em;font-size:0.9em;color:#444}
-  input,button{display:block;width:100%;padding:10px;margin-top:6px;font:inherit;box-sizing:border-box;border-radius:4px;border:1px solid #ccc}
-  button{margin-top:1em;background:#2c5;color:#fff;border:0;font-weight:600;cursor:pointer}
+  /* font-size:16px voorkomt iOS-zoom-on-focus */
+  input,button{display:block;width:100%;padding:12px;margin-top:6px;font:inherit;font-size:16px;box-sizing:border-box;border-radius:4px;border:1px solid #ccc}
+  button{margin-top:1em;background:#2c5;color:#fff;border:0;font-weight:600;cursor:pointer;min-height:44px}
   button:hover{background:#1b4}
   .err{color:#c33;padding:8px 0;font-size:0.9em}
   footer{margin-top:2em;text-align:center;color:#888;font-size:0.8em}
@@ -180,14 +183,18 @@ LOGIN_HTML = """<!DOCTYPE html>
 
 SETUP_HTML = """<!DOCTYPE html>
 <html lang="nl"><head>
-<meta charset="utf-8"><title>MeshCore Gateway Web Client — Setup</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MeshCore Gateway Web Client — Setup</title>
 <style>
   body{font-family:system-ui,sans-serif;max-width:420px;margin:5em auto;padding:1em;background:#f6f6f6}
+  @media (max-width:480px){body{margin:1.5em auto;padding:0.8em}}
   h2{margin-top:0}p.intro{color:#555;font-size:0.9em}
   form{background:#fff;padding:1.5em;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.1)}
   label{display:block;margin-bottom:0.5em;font-size:0.9em;color:#444}
-  input,button{display:block;width:100%;padding:10px;margin-top:6px;font:inherit;box-sizing:border-box;border-radius:4px;border:1px solid #ccc}
-  button{margin-top:1em;background:#2c5;color:#fff;border:0;font-weight:600;cursor:pointer}
+  /* font-size:16px voorkomt iOS-zoom-on-focus */
+  input,button{display:block;width:100%;padding:12px;margin-top:6px;font:inherit;font-size:16px;box-sizing:border-box;border-radius:4px;border:1px solid #ccc}
+  button{margin-top:1em;background:#2c5;color:#fff;border:0;font-weight:600;cursor:pointer;min-height:44px}
   button:hover{background:#1b4}
   .err{color:#c33;padding:8px 0;font-size:0.9em}
   footer{margin-top:2em;text-align:center;color:#888;font-size:0.8em}
