@@ -115,12 +115,22 @@ function selectAdminView(sub){
   STATE.view = 'admin';
   STATE.adminSub = sub;
   _hideAllViews();
-  $('admin-view').style.display = 'block';
   const titles = {radio:'Radio', node:'Node', prefs:'Voorkeuren',
                   channels:'Channels', contacts:'Contacten', bots:'Bots',
-                  housekeeping:'Housekeeping', users:'Gebruikers'};
+                  housekeeping:'Housekeeping', users:'Gebruikers',
+                  repeaters:'Repeaters'};
   $('view-title').textContent = 'Admin — ' + (titles[sub] || sub);
-  renderAdmin();
+  if (sub === 'repeaters') {
+    // Repeaters hergebruikt de reports-view container omdat de renderer
+    // (renderReportRepeaters) op #reports-view target. Selectie resetten
+    // zodat het detail-paneel niet meteen het manage-paneel toont.
+    STATE.selectedRepeater = null;
+    $('reports-view').style.display = 'block';
+    renderReportRepeaters();
+  } else {
+    $('admin-view').style.display = 'block';
+    renderAdmin();
+  }
   renderTree();
   renderDetail();
   _maybeCloseDrawerOnNav();

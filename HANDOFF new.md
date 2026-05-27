@@ -2,7 +2,7 @@
 
 **Project:** `/Users/dhammel/Library/CloudStorage/OneDrive-Flight815B.V/Development/Python/Meshcore/WebClient`
 **Branch:** `refactor/split-web` (eerder gemerged naar `main`; user heeft feitelijk maar 1 branch)
-**Eindstand bij dit handoff-moment:** **v1.1.028** (avatar-menu zichtbaarheid hersteld)
+**Eindstand bij dit handoff-moment:** **v1.1.034** (threading fase 2 — badges + Reply-flow + filter-view + toggle)
 
 Authoritative project-doc: zie `HANDOFF.md` in de repo — die is bijgewerkt tot en met v1.1.022 inclusief mobile-fase-A. v1.1.023/024 zijn cosmetische fixes erbovenop.
 
@@ -81,6 +81,108 @@ Fix: title 40vw, node-name 32vw (samen 270px), plus `margin-right:6px` op `.hdr-
 v1.1.025's `header{overflow:hidden}` (vangnet tegen item-overflow) clipte ook het uitgeklapte avatar-menu (`.menu{position:absolute;top:36px}` valt onder de header-rand). User zag alleen een wit hoekje.
 
 Verwijderd. `.title`, `.hdr-status` en `.hdr-status .item` hebben al elk hun eigen `overflow:hidden`+ellipsis, dus tekst-overflow wordt op item-niveau opgevangen — vangnet op header is niet nodig.
+
+### v1.1.029 — 100dvh ipv 100vh (mobile URL-bar)
+User testte op echte OnePlus 13 (Chrome Android): DevTools-emulatie zag er goed uit maar IRL drukte de Chrome URL-bar het chat-form onder het scherm. `body{height:100vh}` rekent niet met dynamic UI chrome.
+
+Fix: `body{height:100vh;height:100dvh}` — `100dvh` is dynamic viewport height die wel rekening houdt met URL-bar; `100vh` blijft als fallback voor <Chrome 108 / <iOS 15.4.
+
+### v1.1.030 — Repeaters van Rapportages naar Admin (admin-only)
+User: "alleen alles onder admin is voor admins beschikbaar, maar dan moet het item repeaters wel onder admin komen te staan". Geen per-user `allowed_views`-UI nodig — gewoon role-based split. Repeaters logisch admin-only (favorites, repeater-management, stale-cleanup).
+
+Status `allowed_views`-veld: blijft in DB (`User.allowed_views`), in sessie en in `/me`-payload, maar **wordt niet actief gebruikt voor enforcement**. Frontend tree-render checkt `STATE.me.role==='admin'` voor Admin-groep; rest is open voor authed users. Het veld kan in de toekomst weer geactiveerd worden voor fijnmazige rechten, voor nu is 't dode code.
+
+Wijzigingen:
+- **`templates/index.html`**: `<li>Repeaters</li>` verplaatst van `grp-reports` naar `grp-admin` (tussen Contacten en Bots). `onclick` van `selectReport('repeaters')` → `selectAdminView('repeaters')`, `data-report` → `data-sub`.
+- **`static/js/02-tree.js`**: `selectAdminView` heeft nu een special-case voor `'repeaters'` die `#reports-view` toont (ipv `#admin-view`) en `renderReportRepeaters()` aanroept. `renderReportRepeaters` zelf is ongewijzigd — target blijft `#reports-view`. Title wordt nu "Admin — Repeaters". `STATE.selectedRepeater` wordt gereset bij switch.
+- **`static/js/06-detail.js`**: conditie voor manage-paneel: `STATE.view==='admin' && STATE.adminSub==='repeaters'` (was `reports`/`repeaters`).
+- **`static/js/07-bootstrap.js`**: `refreshAndRerender()` admin-branch dispatch: `adminSub==='repeaters'` → `renderReportRepeaters()`, anders `renderAdmin()`.
+- **`web.py`**: `_auth_or_401` vervangen door `_admin_or_403` op:
+  - `GET /reports/repeaters`
+  - `GET /reports/repeaters/favorites`
+  - `POST /reports/repeaters/favorites`
+  - `DELETE /reports/repeaters/favorites/{pubkey}`
+
+URL-paden van repeater-routes zijn niet hernoemd (zouden `/admin/repeaters/...` moeten heten voor consistentie) — kost extra werk en URL-breakage. Voor nu auth-check verzwaard, URL onveranderd.
+
+Bestaande `/admin/repeaters/*` routes (stale, cleanup, ping, login, logout, session, cmd, manage_status) waren al `_admin_or_403`.
+
+### v1.1.031 — Callsign-prefix voor uitgaande berichten
+Self-serve identifier-prefix die voor elke uitgaande tekst gezet wordt zodat ontvangers zien welke web-user 'm verstuurd heeft. Format: `[XXX] tekst`. Vrij Unicode (incl. emoji), max 16 codepoints, leeg = uit.
+
+- **DB (`db.py`)**: nieuwe `User.callsign: Mapped[str]` kolom (VARCHAR(64) default ''). `SCHEMA_VERSION` 12 → 13. Migratie via `ALTER TABLE users ADD COLUMN callsign VARCHAR(64) DEFAULT ''` voor bestaande DB's. Helper `set_user_callsign(username, callsign)`.
+- **Sessie (`web.py`)**: `_new_session` schrijft callsign in sessie. Nieuwe helper `_session_from_environ(environ)` zodat de sio-handler de sessie via cookie kan opzoeken.
+- **`/me`-endpoint**: bevat nu `callsign`-veld.
+- **`/me/callsign` endpoint** (POST, self-serve): valideert (max 16 codepoints, geen control chars), schrijft DB, synct alle actieve sessies van die user zodat de prefix meteen actief is zonder her-login.
+- **sio `send`-handler**: pakt sessie uit `sio.get_environ(sid)`, prependt `[CS] ` voor de tekst als callsign gezet is. Geldt voor zowel kanaal- als DM-berichten.
+- **UI**: avatar-menu krijgt item "Callsign instellen…" (of "Callsign: XXX (wijzig…)") tussen username en wachtwoord-link. `changeCallsignPrompt()` en `updateCallsignMenuLabel()` in `07-bootstrap.js`.
+
+Geen admin-UI voor andere users' callsigns toegevoegd — user koos self-serve. Het bestaande `allowed_views`-veld blijft inactief.
+
+**Bekende grens:** receiver ziet ruwweg "NodeNaam: [DMH] tekst" — de callsign zit IN de message-text, niet in de sender-name. Aanpassing van node-name per send zou USB-traffic + advert-confusie veroorzaken (afgewezen optie).
+
+### v1.1.032 — cache-buster op static assets
+Na deploy van 1.1.031 zag user "callsign-knop doet niets" — bleek browser-cache (oude 07-bootstrap.js). `<link>` en `<script>` tags krijgen nu `?v={{VERSION}}` query, zodat elke `APP_VERSION` bump browser-cache forceert te invalideren.
+
+Tegen-effect: cache-hit-rate gaat omlaag voor terugkerende users (elke versie laden ze JS opnieuw), maar bij een gateway-app waar js totaal ~80KB is, verwaarloosbaar.
+
+### v1.1.033 — Threading fase 1: parent_id (DB + backend)
+Eerste fase van threading-feature. Alleen backend + DB-laag — frontend toont nog niks. Doel: parent_id-veld kunnen opslaan bij outgoing msgs zodat fase 2/3 erop kan voortbouwen.
+
+- **DB (`db.py`)**: nieuwe `Message.parent_id: Mapped[Optional[int]]` (Integer, nullable, indexed). `SCHEMA_VERSION` 13 → 14. Migratie: `ALTER TABLE messages ADD COLUMN parent_id INTEGER DEFAULT NULL` + `CREATE INDEX IF NOT EXISTS ix_messages_parent_id`. Bestaande msgs krijgen NULL = top-level.
+- **`save_message`**: accepteert nu `parent_id` kwarg.
+- **`gateway.py` `Message`**: slot+init krijgt `parent_id`. `db_handler` reikt 'm door naar save_message. `send_and_dispatch` accepteert kwarg en plakt 'm op de outgoing Message. De send-lambdas in `main()` voor web/bot accepteren optionele `parent_id` kwarg (backward compat: bots geven 'm niet mee).
+- **`web.py`**:
+  - `_row_to_dict` voegt `parent_id` toe aan history-payload.
+  - sio `send`-handler leest `data.get("parent_id")` (int of None) en geeft mee aan `send_channel`/`send_dm_fn`.
+  - sio `msg`-emit (live broadcast naar clients) bevat ook `parent_id`.
+
+**Niet gewijzigd:** frontend kent `parent_id` nog niet, render of UI ongewijzigd. Outgoing msgs kunnen pas met parent_id verzonden worden zodra fase 2 een Reply-flow heeft (`STATE.replyTo` + payload-uitbreiding in 03-chat.js send).
+
+**Volgende fasen:**
+- Fase 2: frontend mention-heuristiek (zonder DB) + badge tussen ts en sender + Reply-flow die parent_id mee-stuurt
+- Fase 3: filter-view (alleen thread tonen) + localStorage toggle
+
+### v1.1.034 — Threading fase 2+3 (frontend)
+Frontend voor threading. Fase 3 (filter-view + toggle) meteen meegenomen omdat 't klein bleek; geen aparte release nodig.
+
+**Data-flow:**
+- `STATE.msgs` houdt alle msgs in huidige chat-view (root-array, gevuld door `loadChatHistory` en `addMsg`).
+- `STATE.replyCounts` is `{rootId: aantal-descendants}`, opnieuw berekend door `buildReplyTree(msgs)` na elke change. Heuristisch parent op `m._inferredParent` (niet persisted; alleen voor render).
+- `STATE.replyTo = {id, sender}` als user op Reply heeft geklikt — gebruikt door send-handler om `parent_id` mee te sturen.
+- `STATE.threadFilter = rootId` als thread-view actief is; null = vlakke chat.
+- `STATE.threadingEnabled` geladen uit `localStorage.threading_on` (default `true`).
+
+**Helpers (01-core.js):**
+- `extractMentionTarget(text)` — match `@[X]` aan begin.
+- `buildReplyTree(msgs)` — chrono-sort, vult `_inferredParent` voor msgs zonder expliciete `parent_id` als ze met `@[X]` beginnen en X binnen 30 min een msg heeft. Bouwt `STATE.replyCounts` door descendants per root te tellen. Cycli-bescherming via max-50-hops loop.
+- `isInThread(m, rootId)` — wandelt parent-chain (explicit/inferred) terug, true als rootId in pad zit.
+- `setThreadingEnabled(on)` — schrijft `localStorage`.
+
+**Render (03-chat.js):**
+- `_buildMsgEl` voegt `<span class="thread-badge">` tussen ts en peer (placeholder, gevuld door `_refreshThreadBadge`). Klik op badge roept `enterThreadView(rootId)` aan; klik op msg-body (niet badge) doet de normale `selectMsg`.
+- `refreshAllThreadBadges()` na elke `addMsg` of bij toggle-flip.
+- `enterThreadView(rootId)` verbergt alle msgs niet in de thread, plaatst `<div id="thread-banner">` boven het log met snippet + back-link.
+- `exitThreadView()` herstelt alles.
+- `loadChatHistory` en `loadOlder` vullen `STATE.msgs` en roepen `buildReplyTree` aan vóór render.
+
+**Reply-flow (06-detail.js + 03-chat.js):**
+- `replyToSelected` (al bestaande knop in detail-pane): zet nu óók `STATE.replyTo`, toont `#reply-banner` boven `#chat-form`. De `@[Sender]` prefix in input blijft (backward-compat met clients die alleen mentions snappen).
+- `cancelReply()` (× knop in banner) wist STATE.replyTo en stript `@[..]` prefix uit input.
+- chat-form submit-handler stuurt `parent_id: STATE.replyTo.id` mee in payload, en wist STATE.replyTo na verzenden.
+
+**Toggle (07-bootstrap.js + template):**
+- Avatar-menu krijgt item "Threading-indicators: aan/uit" tussen Callsign en Wachtwoord.
+- `toggleThreadingPref()` flipt `STATE.threadingEnabled`, schrijft localStorage, refresh't badges, en verlaat eventuele thread-view als 'ie wordt uitgezet.
+
+**CSS (`static/app.css`):**
+- `.thread-badge` — pil-vormig, blauwe achtergrond, klein font.
+- `#thread-banner` — gele balk boven log.
+- `#reply-banner` — lichte achtergrond boven chat-form met × knop.
+
+**Bekende grens:** parent-chain-lookup in `isInThread` is O(N) per msg (lineair scan in STATE.msgs). Voor typische 30-100 msgs prima; bij 1000+ in één view zou een hash-map nodig zijn. Niet nu.
+
+**Test-suggestie:** stuur een msg, klik Reply op een ontvangen msg, stuur nog één → badge `💬1` verschijnt bij de geantwoorde msg. Klik badge → filter naar die thread. Toggle in menu uit → badges verdwijnen.
 
 ---
 

@@ -114,10 +114,10 @@ class Message:
     Dispatch-handlers werken hierop, dus print/db/web allemaal dezelfde flow."""
 
     __slots__ = ("direction", "kind", "channel_idx", "sender", "text", "raw",
-                 "expected_ack", "ack_status", "db_id")
+                 "expected_ack", "ack_status", "db_id", "parent_id")
 
     def __init__(self, direction: str, kind: str, channel_idx, sender, text, raw=None,
-                 expected_ack=None, ack_status=None):
+                 expected_ack=None, ack_status=None, parent_id=None):
         self.direction = direction
         self.kind = kind
         self.channel_idx = channel_idx
@@ -127,6 +127,7 @@ class Message:
         self.expected_ack = expected_ack   # 4-byte hex token, alleen voor outgoing
         self.ack_status = ack_status       # 'sent' | 'acked' | None
         self.db_id = None                  # gevuld door db_handler na opslag
+        self.parent_id = parent_id         # threading: id van msg waarop dit reply is
 
 
 # Backward-compat alias voor bestaande imports
@@ -196,6 +197,7 @@ async def db_handler(msg: Message) -> None:
             raw=msg.raw,
             expected_ack=msg.expected_ack,
             ack_status=msg.ack_status,
+            parent_id=getattr(msg, "parent_id", None),
         )
         msg.db_id = saved.id  # opdat web_handler de id kan meesturen
     except Exception as e:  # noqa: BLE001
@@ -362,7 +364,8 @@ async def _apply_channel_scope(mc, channel_idx: int) -> None:
 
 async def send_and_dispatch(mc, *, kind: str, text: str,
                             channel_idx: Optional[int] = None,
-                            peer: Optional[str] = None) -> bool:
+                            peer: Optional[str] = None,
+                            parent_id: Optional[int] = None) -> bool:
     """Verstuur via meshcore + fire 'out' Message naar dispatcher.
 
     Eén centrale plek voor zowel CLI als web. Returnt True bij succes.
@@ -403,6 +406,7 @@ async def send_and_dispatch(mc, *, kind: str, text: str,
         raw=str(res),
         expected_ack=expected_ack,
         ack_status=("sent" if expected_ack else "sent"),
+        parent_id=parent_id,
     )
     await dispatch.fire(msg)
     # Voor channel-sends: registreer voor implicit-ACK detectie via RX_LOG
@@ -1596,11 +1600,11 @@ async def main() -> int:
             import web as web_mod
             asgi_app, _ = web_mod.setup_web(
                 mc=mc,
-                send_channel=lambda idx, text: send_and_dispatch(
-                    mc, kind="channel", channel_idx=idx, text=text
+                send_channel=lambda idx, text, parent_id=None: send_and_dispatch(
+                    mc, kind="channel", channel_idx=idx, text=text, parent_id=parent_id
                 ),
-                send_dm=lambda peer, text: send_and_dispatch(
-                    mc, kind="dm", peer=peer, text=text
+                send_dm=lambda peer, text, parent_id=None: send_and_dispatch(
+                    mc, kind="dm", peer=peer, text=text, parent_id=parent_id
                 ),
                 dispatch_obj=dispatch,
                 gateway_state=state,

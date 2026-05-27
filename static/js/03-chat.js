@@ -4,6 +4,7 @@ async function loadChatHistory(){
   $('log').innerHTML = '';
   STATE.selectedMsg = null;
   STATE.msgIndex = {};
+  STATE.msgs = [];
   STATE.pendingMsgs = [];
   try {
     let basePath;
@@ -22,7 +23,11 @@ async function loadChatHistory(){
       const anchorMs = Date.now() - STATE.timeAnchorHours * 3600 * 1000;
       toRender = rows.filter(m => new Date(m.ts).getTime() <= anchorMs).slice(-30);
     }
-    toRender.forEach(m => addMsg(m, /*skipFilter=*/false));
+    // Eerst alle msgs in STATE bewaren, dan tree opbouwen, dan renderen.
+    // Zo kunnen badges meteen correct zijn bij eerste render.
+    STATE.msgs = toRender.slice();
+    buildReplyTree(STATE.msgs);
+    toRender.forEach(m => addMsg(m, /*skipFilter=*/false, /*skipTreeRebuild=*/true));
     applyFilter();
   } catch(e){}
 }
@@ -50,10 +55,14 @@ async function loadOlder(){
     const log = $('log');
     const wasAtBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
     const sentinel = log.firstChild;
+    // Eerst toevoegen aan STATE.msgs + tree opnieuw bouwen, dan render
+    (STATE.msgs || (STATE.msgs = [])).unshift(...rows);
+    buildReplyTree(STATE.msgs);
     rows.forEach(m => {
       const div = _buildMsgEl(m);
       log.insertBefore(div, sentinel);
     });
+    refreshAllThreadBadges();
     applyFilter();
     // Scroll niet auto naar onder als we boven aan het kijken zijn
     if (wasAtBottom) log.scrollTop = log.scrollHeight;
@@ -234,27 +243,109 @@ function _buildMsgEl(m){
   if (m.direction === 'out') prefix = ackIcon(m);
   else                       prefix = signalDot(extractMeta(m));
 
+  // Thread-badge: leeg span tussen ts en peer, gevuld door refreshThreadBadge.
+  // (Doe 't via een placeholder zodat positie in DOM stabiel is, ook als de
+  //  count later van 0 naar >0 gaat door inkomende reply.)
   div.innerHTML = prefix +
     '<span class="ts">'+escapeHTML(fmtTs(m.ts))+'</span>' +
+    '<span class="thread-badge" data-msg-id="'+(m.id || '')+'"></span>' +
     '<span class="peer">'+escapeHTML(displayPeer)+':</span>' +
     escapeHTML(displayText);
-  div.onclick = () => selectMsg(m, div);
+  div.onclick = (ev) => {
+    // Klik op badge => thread-filter, niet msg-select
+    if (ev.target && ev.target.classList && ev.target.classList.contains('thread-badge')) return;
+    selectMsg(m, div);
+  };
   m._sender = displayPeer;
   m._body = displayText;
   if (m.id) STATE.msgIndex[m.id] = {el: div, msg: m};
+  // Direct juiste badge tonen
+  _refreshThreadBadge(div.querySelector('.thread-badge'), m.id);
   return div;
 }
 
-function addMsg(m){
+function _refreshThreadBadge(span, msgId){
+  if (!span) return;
+  const count = (STATE.replyCounts && STATE.replyCounts[msgId]) || 0;
+  if (!STATE.threadingEnabled || count === 0) {
+    span.textContent = '';
+    span.style.display = 'none';
+    return;
+  }
+  span.style.display = '';
+  span.textContent = '💬' + count;
+  span.title = 'Thread met ' + count + ' replies — klik om alleen deze te tonen';
+  span.onclick = (ev) => { ev.stopPropagation(); enterThreadView(msgId); };
+}
+
+function refreshAllThreadBadges(){
+  document.querySelectorAll('.thread-badge').forEach(span => {
+    const id = parseInt(span.dataset.msgId, 10);
+    _refreshThreadBadge(span, id);
+  });
+}
+
+function enterThreadView(rootId){
+  STATE.threadFilter = rootId;
+  // Loop alle visible msgs, verberg degenen die niet in deze thread zitten
+  document.querySelectorAll('#log .msg').forEach(el => {
+    // Vind bijhorende msg via msgIndex (key = id, val = {el, msg})
+    let foundMsg = null;
+    for (const id of Object.keys(STATE.msgIndex)) {
+      if (STATE.msgIndex[id].el === el) { foundMsg = STATE.msgIndex[id].msg; break; }
+    }
+    el.style.display = (foundMsg && isInThread(foundMsg, rootId)) ? '' : 'none';
+  });
+  _renderThreadBanner(rootId);
+}
+
+function exitThreadView(){
+  STATE.threadFilter = null;
+  document.querySelectorAll('#log .msg').forEach(el => { el.style.display = ''; });
+  _renderThreadBanner(null);
+  applyFilter();  // restore text-filter als die aan stond
+}
+
+function _renderThreadBanner(rootId){
+  let bar = document.getElementById('thread-banner');
+  if (!rootId) {
+    if (bar) bar.remove();
+    return;
+  }
+  const root = (STATE.msgs || []).find(x => x.id === rootId);
+  const snippet = root ? (stripNamePrefix(root) || '').slice(0, 80) : '?';
+  const count = (STATE.replyCounts && STATE.replyCounts[rootId]) || 0;
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'thread-banner';
+    const log = $('log');
+    log.parentNode.insertBefore(bar, log);
+  }
+  bar.innerHTML = '<span class="tb-label">Thread:</span> <span class="tb-snip">' +
+    escapeHTML(snippet) + '</span> · ' + (count + 1) + ' berichten · ' +
+    '<a href="#" onclick="exitThreadView();return false">← terug naar alle</a>';
+}
+
+function addMsg(m, skipFilter, skipTreeRebuild){
+  // Track msg + rebuild tree zodat badges van bestaande parent/roots updaten
+  if (!skipTreeRebuild) {
+    (STATE.msgs || (STATE.msgs = [])).push(m);
+    buildReplyTree(STATE.msgs);
+  }
   const div = _buildMsgEl(m);
   $('log').appendChild(div);
   // Filter direct toepassen
   const f = STATE.filterText;
   if (f && !div.textContent.toLowerCase().includes(f)) {
     div.style.display = 'none';
+  } else if (STATE.threadFilter && !isInThread(m, STATE.threadFilter)) {
+    // Thread-view actief — verberg msgs buiten de thread
+    div.style.display = 'none';
   } else {
     $('log').scrollTop = $('log').scrollHeight;
   }
+  // Update badge van eventueel-nieuwe parent (de root waar deze msg in zit)
+  if (!skipTreeRebuild) refreshAllThreadBadges();
 }
 
 function selectMsg(m, el){
@@ -330,12 +421,21 @@ $('chat-form').addEventListener('submit', (e) => {
   } else {
     payload = {channel_idx: STATE.channel.idx, text: t};
   }
+  // Threading: parent_id meesturen als user via Reply-knop een msg heeft gemarkeerd
+  if (STATE.replyTo && STATE.replyTo.id) {
+    payload.parent_id = STATE.replyTo.id;
+  }
   sock.emit('send', payload, (ack) => {
     $('btn').disabled = false;
     if (!ack || !ack.ok) toast('verzenden mislukt: '+(ack && ack.err || '?'), 'err');
     $('txt').focus();
   });
   $('txt').value='';
+  // Reply-status resetten zodra send is gestuurd — banner weghalen
+  if (STATE.replyTo) {
+    STATE.replyTo = null;
+    renderReplyBanner();
+  }
 });
 
 /* ============== emoji picker ============== */

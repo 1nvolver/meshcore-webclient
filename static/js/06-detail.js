@@ -57,8 +57,9 @@ function renderDetail(){
     return;
   }
 
-  // 2a) Reports + repeater geselecteerd → manage-paneel
-  if (STATE.view === 'reports' && STATE.reportSub === 'repeaters' && STATE.selectedRepeater) {
+  // 2a) Admin → Repeaters + repeater geselecteerd → manage-paneel
+  // (Repeaters is in v1.1.030 verplaatst van Rapportages naar Admin.)
+  if (STATE.view === 'admin' && STATE.adminSub === 'repeaters' && STATE.selectedRepeater) {
     el.innerHTML = renderRepeaterManage();
     return;
   }
@@ -144,6 +145,11 @@ function replyToSelected(){
     toast('geen afzender bekend om te @-en', 'err');
     return;
   }
+  // Markeer als reply zodat send-handler parent_id meestuurt voor expliciete
+  // (DB-persisted) thread-koppeling. De @[..] prefix is voor backward-compat
+  // met clients die alleen mentions kennen — die kunnen 'm dan ook detecteren.
+  STATE.replyTo = {id: m.id, sender: sender};
+  renderReplyBanner();
   const cur = $('txt').value;
   const prefix = '@[' + sender + '] ';
   // Vervang als er al een @[..] aan het begin staat, anders prepend
@@ -156,6 +162,33 @@ function replyToSelected(){
   // Cursor aan eind
   const v = $('txt').value;
   $('txt').setSelectionRange(v.length, v.length);
+}
+
+function cancelReply(){
+  STATE.replyTo = null;
+  renderReplyBanner();
+  // @[..] prefix uit input strippen (alleen als 'ie matched)
+  const cur = $('txt').value;
+  $('txt').value = cur.replace(/^@\[[^\]]+\]\s*/, '');
+  $('txt').focus();
+}
+
+function renderReplyBanner(){
+  let bar = document.getElementById('reply-banner');
+  if (!STATE.replyTo) {
+    if (bar) bar.remove();
+    return;
+  }
+  const form = $('chat-form');
+  if (!form) return;
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'reply-banner';
+    form.parentNode.insertBefore(bar, form);
+  }
+  bar.innerHTML = '<span class="rb-label">↳ reply op</span> <b>' +
+    escapeHTML(STATE.replyTo.sender) + '</b>' +
+    ' <button type="button" class="rb-cancel" onclick="cancelReply()" title="annuleer reply">×</button>';
 }
 
 function _renderHop(seg){

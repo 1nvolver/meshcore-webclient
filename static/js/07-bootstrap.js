@@ -44,6 +44,8 @@ async function loadMe(){
   try {
     STATE.me = await api('/me');
     $('menu-username').textContent = STATE.me.username + ' (' + STATE.me.role + ')';
+    updateCallsignMenuLabel();
+    updateThreadingMenuLabel();
     if (STATE.me.role === 'admin') {
       $('menu-quit').style.display = '';
       // Toon admin-groep in tree (was display:none in HTML)
@@ -94,6 +96,43 @@ async function changePasswordPrompt(){
     const r = await api('/change-password', {method:'POST', body:JSON.stringify({old:oldp, new:newp})});
     toast(r.message || 'ok', 'ok');
   } catch(e){}
+}
+
+async function changeCallsignPrompt(){
+  // Prompt met huidige waarde als default. Leeg = uitzetten.
+  const cur = (STATE.me && STATE.me.callsign) || '';
+  const v = prompt('Callsign (3 tekens of emoji; leeg = uit):', cur);
+  if (v === null) return;  // cancel
+  const cs = v.trim();
+  try {
+    const r = await api('/me/callsign', {method:'POST', body:JSON.stringify({callsign: cs})});
+    if (STATE.me) STATE.me.callsign = r.callsign || '';
+    updateCallsignMenuLabel();
+    toast(r.message || 'ok', 'ok');
+  } catch(e){}
+}
+
+function updateCallsignMenuLabel(){
+  const el = document.getElementById('menu-callsign');
+  if (!el) return;
+  const cs = (STATE.me && STATE.me.callsign) || '';
+  el.textContent = cs ? ('Callsign: ' + cs + ' (wijzig…)') : 'Callsign instellen…';
+}
+
+function updateThreadingMenuLabel(){
+  const el = document.getElementById('menu-threading');
+  if (!el) return;
+  el.textContent = 'Threading-indicators: ' + (STATE.threadingEnabled ? 'aan' : 'uit');
+}
+
+function toggleThreadingPref(){
+  setThreadingEnabled(!STATE.threadingEnabled);
+  updateThreadingMenuLabel();
+  // Verberg/toon alle badges meteen + verlaat thread-view als die actief is
+  if (typeof refreshAllThreadBadges === 'function') refreshAllThreadBadges();
+  if (!STATE.threadingEnabled && STATE.threadFilter && typeof exitThreadView === 'function') {
+    exitThreadView();
+  }
 }
 
 /* ============== native notifications ============== */
@@ -150,7 +189,11 @@ async function refreshHeaderOnly(){
 // periodiek aangeroepen en mag NIET rerenderen want dat wist form-inputs.
 async function refreshAndRerender(){
   await refresh();
-  if (STATE.view === 'admin')     renderAdmin();
+  if (STATE.view === 'admin') {
+    // Repeaters-subview gebruikt renderReportRepeaters (target: #reports-view).
+    if (STATE.adminSub === 'repeaters') renderReportRepeaters();
+    else                                renderAdmin();
+  }
   if (STATE.view === 'reports')   renderReports();
   if (STATE.view === 'contacts')  renderContactsManager();
 }

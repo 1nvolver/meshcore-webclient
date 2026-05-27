@@ -3,7 +3,10 @@
   /* overflow-x:hidden op html is een vangnet tegen onverwachte horizontale
      overflow van fixed-positioned children (bottom-sheet, drawer) op mobiel. */
   html{overflow-x:hidden}
-  body{font-family:system-ui,sans-serif;margin:0;background:#fafafa;color:#222;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  /* 100dvh (dynamic viewport height) houdt rekening met de Chrome/Safari
+     URL-bar op mobiel — anders valt het chat-form onder de URL-bar. 100vh
+     blijft als fallback voor oudere browsers (<Chrome 108 / <iOS 15.4). */
+  body{font-family:system-ui,sans-serif;margin:0;background:#fafafa;color:#222;display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden}
 
   /* ---- header --------------------------------------------------- */
   /* GEEN overflow:hidden op header — clipt anders het uitgeklapte avatar-menu
@@ -84,6 +87,21 @@
   .ts{color:#999;margin-right:8px}
   .peer{font-weight:600;margin-right:6px}
   .sys{color:#999;font-style:italic}
+  /* Threading: badge tussen ts en peer */
+  .thread-badge{display:inline-block;margin:0 6px 0 4px;padding:0 6px;border-radius:9px;background:#e8eef8;color:#246;font-size:11px;font-weight:600;cursor:pointer;user-select:none;border:1px solid #cdd}
+  .thread-badge:hover{background:#d8e2f2;border-color:#9bb}
+  /* Thread-filter banner boven log */
+  #thread-banner{padding:6px 12px;background:#fff8d6;border-bottom:1px solid #f5b800;font-size:12px;color:#665}
+  #thread-banner .tb-label{font-weight:600;color:#4a3}
+  #thread-banner .tb-snip{font-family:ui-monospace,monospace;color:#333}
+  #thread-banner a{color:#246;text-decoration:none;margin-left:4px;font-weight:600}
+  #thread-banner a:hover{text-decoration:underline}
+  /* Reply-banner boven chat-form */
+  #reply-banner{padding:6px 10px;background:#eef;border-top:1px solid #cce;font-size:12px;color:#345;display:flex;align-items:center;gap:8px}
+  #reply-banner .rb-label{color:#778}
+  #reply-banner .rb-cancel{margin-left:auto;background:transparent;border:0;font-size:1.2em;line-height:1;color:#789;cursor:pointer;padding:2px 8px}
+  #reply-banner .rb-cancel:hover{color:#c33}
+
   #chat-form{display:flex;border-top:1px solid #ddd;padding:8px;background:#f0f0f0;flex:0 0 auto;position:relative}
   #chat-form input{flex:1;padding:10px;font:inherit;border:1px solid #ccc;border-radius:4px}
   #chat-form button{padding:10px 20px;font:inherit;background:#2c5;color:#fff;border:0;border-radius:4px;margin-left:8px;cursor:pointer;font-weight:600}

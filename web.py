@@ -41,7 +41,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 #   x = major (handmatig te bepalen)
 #   y = minor (handmatig te bepalen)
 #   z = dot-versie, bumpt bij elke door de gebruiker gevraagde wijziging
-APP_VERSION = "1.1.028"
+APP_VERSION = "1.1.034"
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +114,7 @@ def _new_session(user) -> str:
         "username": user.username,
         "role": user.role,
         "allowed_views": views,
+        "callsign": (user.callsign or "") if hasattr(user, "callsign") else "",
     }
     return token
 
@@ -138,13 +139,18 @@ def _is_admin_request(request: Request) -> bool:
 
 
 def _is_authed_environ(environ: dict) -> bool:
+    return _session_from_environ(environ) is not None
+
+
+def _session_from_environ(environ: dict) -> Optional[dict]:
+    """Variant van _session_from_request voor Socket.IO environ-dict."""
     raw_cookie = environ.get("HTTP_COOKIE", "")
     cookies = {}
     for part in raw_cookie.split(";"):
         if "=" in part:
             k, v = part.strip().split("=", 1)
             cookies[k] = v
-    return cookies.get(COOKIE_NAME) in _SESSIONS
+    return _SESSIONS.get(cookies.get(COOKIE_NAME))
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +368,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             "username": s["username"],
             "role": s["role"],
             "allowed_views": s["allowed_views"],
+            "callsign": s.get("callsign", ""),
             "must_change_password": bool(s.get("must_change", False)),
         }
 
@@ -497,6 +504,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             "acked_at": ack_iso,
             "latency_s": latency_s,
             "expected_ack": m.expected_ack,
+            "parent_id": getattr(m, "parent_id", None),
         }
 
     @app.get("/channels/{idx}/history")
@@ -610,7 +618,9 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
 
     @app.get("/reports/repeaters")
     async def reports_repeaters(request: Request):
-        _auth_or_401(request)
+        # v1.1.030: repeaters-functionaliteit verplaatst naar Admin-groep in tree;
+        # daarom nu admin-only ipv enkel auth-check.
+        _admin_or_403(request)
         sess = _session_from_request(request) or {}
         username = sess.get("username") or ""
         favs = set(await db.list_fav_repeaters(username)) if username else set()
@@ -648,7 +658,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
 
     @app.get("/reports/repeaters/favorites")
     async def reports_repeaters_favs_list(request: Request):
-        _auth_or_401(request)
+        _admin_or_403(request)
         sess = _session_from_request(request) or {}
         username = sess.get("username") or ""
         favs = await db.list_fav_repeaters(username) if username else []
@@ -656,7 +666,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
 
     @app.post("/reports/repeaters/favorites")
     async def reports_repeaters_favs_add(request: Request, payload: dict):
-        _auth_or_401(request)
+        _admin_or_403(request)
         sess = _session_from_request(request) or {}
         username = sess.get("username") or ""
         if not username:
@@ -672,7 +682,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
 
     @app.delete("/reports/repeaters/favorites/{pubkey}")
     async def reports_repeaters_favs_del(request: Request, pubkey: str):
-        _auth_or_401(request)
+        _admin_or_403(request)
         sess = _session_from_request(request) or {}
         username = sess.get("username") or ""
         if not username:
@@ -1225,6 +1235,31 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
         s["must_change"] = False  # update sessie
         return {"ok": True, "message": "wachtwoord bijgewerkt"}
 
+    # ---------- Eigen callsign (self-serve) -------------------------------
+
+    @app.post("/me/callsign")
+    async def set_my_callsign(request: Request, payload: dict):
+        s = _session_from_request(request)
+        if not s:
+            raise HTTPException(401, "not authenticated")
+        cs = (payload.get("callsign") or "")
+        # Strip whitespace, verbied control chars (newline/tab/null), max 16 codepoints.
+        cs = cs.strip()
+        if any(ord(ch) < 32 for ch in cs):
+            raise HTTPException(400, "geen control characters toegestaan")
+        if len(cs) > 16:
+            raise HTTPException(400, "callsign max 16 tekens (codepoints)")
+        ok = await db.set_user_callsign(s["username"], cs)
+        if not ok:
+            raise HTTPException(404, "user niet gevonden")
+        # Sync alle actieve sessies van deze user — zo komt de callsign meteen
+        # in de send-handler tevoorschijn zonder her-login.
+        for ses in _SESSIONS.values():
+            if ses.get("username") == s["username"]:
+                ses["callsign"] = cs
+        return {"ok": True, "callsign": cs,
+                "message": f"callsign {'gewist' if not cs else 'gezet op ' + cs}"}
+
     # ---------- User-management (admin only) ------------------------------
 
     @app.get("/admin/users")
@@ -1667,6 +1702,22 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
         text = (data.get("text") or "").strip()
         if not text:
             return {"ok": False, "err": "leeg bericht"}
+        # Threading: optionele parent_id (id van msg waarop dit een reply is)
+        parent_id = data.get("parent_id")
+        try:
+            parent_id = int(parent_id) if parent_id is not None else None
+        except (TypeError, ValueError):
+            parent_id = None
+        # Callsign-prefix: '[XXX] tekst' als de user een callsign heeft gezet.
+        # Achterhaal sessie via sio environ (cookie) — sid is anoniem.
+        try:
+            environ = sio.get_environ(sid) or {}
+        except Exception:  # noqa: BLE001
+            environ = {}
+        sess = _session_from_environ(environ) or {}
+        cs = (sess.get("callsign") or "").strip()
+        if cs:
+            text = f"[{cs}] {text}"
         try:
             if data.get("kind") == "dm":
                 peer = (data.get("peer") or "").strip()
@@ -1681,10 +1732,10 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
                         "err": "Companion kent deze contact niet — wacht op een advert van die node, "
                                "of zet 'auto-add adverts' aan in Voorkeuren."
                     }
-                ok = await send_dm_fn(peer, text)
+                ok = await send_dm_fn(peer, text, parent_id=parent_id)
             else:
                 idx = int(data.get("channel_idx", 0))
-                ok = await send_channel(idx, text)
+                ok = await send_channel(idx, text, parent_id=parent_id)
             return {"ok": bool(ok)}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "err": str(e)}
@@ -1717,6 +1768,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
                 "raw": raw_out,
                 "ack_status": getattr(msg, "ack_status", None),
                 "expected_ack": getattr(msg, "expected_ack", None),
+                "parent_id": getattr(msg, "parent_id", None),
             },
         )
 

@@ -26,6 +26,17 @@ let STATE = {
     cli_history: [],         // [{cmd, response, ok}]
     last_status: null,       // payload van /admin/repeaters/manage_status
   },
+  // Threading-state (zie HANDOFF v1.1.033 + 034)
+  replyTo: null,             // {id, sender} van msg waarop volgende send reply is, of null
+  threadFilter: null,        // root-msg-id als thread-view actief is; null = vlakke chat
+  msgs: [],                  // alle msgs in huidige view (root-array voor reply-tree)
+  replyCounts: {},           // {rootId: totale-descendant-count} — opnieuw berekend bij elke addMsg
+  threadingEnabled: (function(){
+    try {
+      const v = localStorage.getItem('threading_on');
+      return v === null ? true : v === '1';
+    } catch(e) { return true; }
+  })(),
 };
 
 /* ============== helpers ============== */
@@ -179,5 +190,129 @@ async function quitApp(){
     toast('Gateway sluit af…', 'ok');
     setTimeout(()=>document.body.innerHTML='<p style="padding:40px;font-family:system-ui">Gateway is afgesloten.</p>', 1500);
   } catch(e){}
+}
+
+/* ============== threading helpers ==============
+   Hybride model:
+   - Expliciet: msg.parent_id gezet door Reply-knop (persisted in DB).
+   - Heuristisch: msg-tekst begint met '@[NAAM]' → koppel aan meest recente
+     msg van NAAM binnen 30 min ervoor in dezelfde view.
+   buildReplyTree() loopt door alle msgs in volgorde, vult inferredParent in
+   en bouwt replyCounts (totale descendants per root).
+*/
+function extractMentionTarget(text){
+  if (!text) return null;
+  const m = String(text).match(/^@\[([^\]]+)\]\s*/);
+  return m ? m[1] : null;
+}
+
+function _msgTs(m){
+  // Robust timestamp -> milliseconds. Geeft 0 terug als unparsable (vist altijd uit window).
+  const t = m && m.ts;
+  if (!t) return 0;
+  const d = new Date(t);
+  return isNaN(d.getTime()) ? 0 : d.getTime();
+}
+
+function _msgSender(m){
+  // Voor mention-match willen we de getoonde sender-naam. Pas op: stripNamePrefix
+  // wordt elders gezet als ._sender; gebruik die als beschikbaar.
+  if (m && m._sender) return m._sender;
+  // Fallback: extractSender-equivalent. Voor channel-in: parse '<naam>: ...'.
+  if (m && m.kind === 'channel' && m.direction === 'in') {
+    const raw = m.text || '';
+    const colon = raw.indexOf(':');
+    if (colon > 0) return raw.slice(0, colon).trim();
+  }
+  return (m && m.peer) || null;
+}
+
+const THREAD_WINDOW_MS = 30 * 60 * 1000;  // 30 minuten
+
+function buildReplyTree(msgs){
+  /* Loopt chronologisch (msgs verwacht oud→nieuw of nieuw→oud — sort even):
+     Voor elke msg met null parent_id, check of tekst begint met @[X];
+     zo ja, zoek meest recente msg met sender X binnen 30 min ervoor
+     (in dezelfde channel/dm-view). Sla heuristic-parent op als _inferredParent
+     (niet als parent_id, want dat is alleen voor DB-persisted waardes).
+     Bouw daarna replyCounts: root → totale descendant-count.
+  */
+  if (!Array.isArray(msgs) || msgs.length === 0) {
+    STATE.replyCounts = {};
+    return;
+  }
+  // Sorteer kopie chronologisch
+  const arr = msgs.slice().sort((a,b) => _msgTs(a) - _msgTs(b));
+  const byId = {};
+  for (const m of arr) {
+    if (m && m.id != null) byId[m.id] = m;
+    m._inferredParent = null;
+  }
+
+  // Heuristische parent-inferrer
+  for (let i = 0; i < arr.length; i++) {
+    const m = arr[i];
+    if (!m) continue;
+    if (m.parent_id) continue;  // expliciet gezet — geen heuristiek nodig
+    const stripped = stripNamePrefix(m);  // verwijdert eventueel 'sender: ' prefix
+    const target = extractMentionTarget(stripped);
+    if (!target) continue;
+    const cutoff = _msgTs(m) - THREAD_WINDOW_MS;
+    // Loop terug tot kandidaat gevonden
+    for (let j = i - 1; j >= 0; j--) {
+      const c = arr[j];
+      if (_msgTs(c) < cutoff) break;
+      if (_msgSender(c) === target) {
+        m._inferredParent = c.id;
+        break;
+      }
+    }
+  }
+
+  // Reply-counts: descendants per root. Loop bottom-up: voor elke msg met parent
+  // (explicit of inferred), tel +1 bij parent én bij root.
+  const counts = {};
+  function rootOf(m){
+    // Wandel parent-chain naar boven; bescherming tegen cycli (max 50 hops).
+    let cur = m, hops = 0;
+    while (cur && hops < 50) {
+      const pid = cur.parent_id || cur._inferredParent;
+      if (!pid) return cur.id;
+      const p = byId[pid];
+      if (!p) return cur.id;  // dangling parent — behandel als root
+      cur = p; hops++;
+    }
+    return cur.id;
+  }
+  for (const m of arr) {
+    const pid = m.parent_id || m._inferredParent;
+    if (!pid) continue;  // root, geen reply
+    const root = rootOf(m);
+    if (root != null && root !== m.id) {
+      counts[root] = (counts[root] || 0) + 1;
+    }
+  }
+  STATE.replyCounts = counts;
+}
+
+function isInThread(m, rootId){
+  // Zit msg m in de thread van rootId? (Inclusief root zelf.)
+  if (!rootId || !m) return false;
+  if (m.id === rootId) return true;
+  let cur = m, hops = 0;
+  while (cur && hops < 50) {
+    const pid = cur.parent_id || cur._inferredParent;
+    if (!pid) return false;
+    if (pid === rootId) return true;
+    // Zoek parent-msg in STATE.msgs (lineaire scan; fine voor typische sizes)
+    cur = (STATE.msgs || []).find(x => x.id === pid);
+    hops++;
+  }
+  return false;
+}
+
+function setThreadingEnabled(on){
+  STATE.threadingEnabled = !!on;
+  try { localStorage.setItem('threading_on', on ? '1' : '0'); } catch(e){}
 }
 

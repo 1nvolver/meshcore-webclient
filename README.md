@@ -13,15 +13,18 @@ In één regel: **een MeshCore-companion zichtbaar en bestuurbaar maken vanuit j
 Concrete functionaliteit:
 
 - **Chat**: real-time channel- en DM-berichten via WebSocket. Public channel, hashtag-kanalen (gedeelde naam-PSK) en private kanalen (eigen 128-bit AES-key).
+- **Threading**: berichten die replies hebben krijgen een `💬N`-badge; klik om alleen die conversatie te tonen. Hybride: expliciet via Reply-knop én heuristisch via `@[X]`-mentions (binnen 30 min). Per-user aan/uit toggle.
 - **Historie**: alle in- en uitgaande berichten in SQLite, met paginatie ("laad oudere") en server-side tekst-zoek.
 - **Detail-paneel** per bericht: signaal-kleur (SNR-gebaseerd), hops, alle paden waarover een bericht is binnengekomen ("Heard X Times"), met repeater-namen waar bekend.
-- **Multi-user web-UI**: één admin (eerste setup), daarna kunnen extra gebruikers worden aangemaakt met rol `admin` of `user`. Gebruikers zien alleen Chat (geen admin-menu).
+- **Multi-user web-UI**: één admin (eerste setup), daarna kunnen extra gebruikers worden aangemaakt met rol `admin` of `user`. Gebruikers zien Chat, DM en Rapportages → Overzicht; Admin-tak (incl. Repeaters-paneel) blijft verborgen.
+- **Callsign**: optionele 1-3-tekens (of emoji) identifier per user; wordt automatisch als `[XXX] ` voor uitgaande berichten gezet zodat ontvangers zien welke web-user het verstuurd heeft.
 - **Per-user opgeslagen contactpersonen** in DM-tree, met label en notities.
-- **Admin-paneel**: radio-instellingen (freq/bw/sf/cr/tx-power/path-hash-mode), node (naam/locatie/reboot/advert), kanalen (met optionele flood-scope), housekeeping (DB clean/vacuum), gebruikers, bots, voorkeuren (telemetry, multi-acks, auto-add adverts).
-- **Rapportages**: berichten-per-uur grafiek met instelbare periode, top-kanalen, ack-rate (DM), repeater-overzicht.
+- **Admin-paneel**: radio-instellingen (freq/bw/sf/cr/tx-power/path-hash-mode), node (naam/locatie/reboot/advert), kanalen (met optionele flood-scope), contacten, repeaters (favorieten, stale-cleanup, OTA-management), housekeeping (DB clean/vacuum), gebruikers, bots, voorkeuren (telemetry, multi-acks, auto-add adverts).
+- **Rapportages**: berichten-per-uur grafiek met instelbare periode, top-kanalen, ack-rate (DM).
 - **Bot-framework**: simpele admin-defined bots die op `?keyword` reageren in een specifiek kanaal, met variabelen `{TIME}`, `{UPRADIO}`, `{UPNODE}`, `{HELP}`.
 - **Notificaties**: gele highlight + geluid + browser-notification bij berichten waarin jouw node-naam ge-`@`-ed wordt.
 - **Implicit ack-tracking** voor channel-msgs (wanneer een repeater jouw bericht herhaalt) en gewone DM-acks, met inline `✓`/`↻`/`✓✓`-indicatoren.
+- **Mobile-responsive UI**: 3 breakpoints (mobile ≤767px / tablet 768-1199 / desktop ≥1200). Op mobile: hamburger-drawer voor de tree, bottom-sheet detail, 16px input-font (voorkomt iOS-zoom), 100dvh body-hoogte (corrigeert voor Chrome/Safari URL-bar).
 
 ---
 
@@ -344,7 +347,7 @@ Een gewone gebruiker wordt door de admin aangemaakt:
 4. Direct na inlog vraagt de UI (verplicht) om een nieuw eigen wachtwoord (minimaal 6 tekens).
 5. Daarna is het account normaal actief.
 
-Een user kan **niets in het admin-menu** zien (de hele Admin-tak in de tree is verborgen). De Quit-knop in het avatar-menu is ook admin-only. Wel toegankelijk: Chat, DM, Rapportages.
+Een user kan **niets in het admin-menu** zien (de hele Admin-tak in de tree is verborgen, inclusief Repeaters). De Quit-knop in het avatar-menu is ook admin-only. Wel toegankelijk: Chat, DM, Rapportages → Overzicht.
 
 ### Wachtwoord wijzigen
 
@@ -353,6 +356,16 @@ Iedere gebruiker kan het eigen wachtwoord wijzigen via het avatar-icoon rechtsbo
 ### Reset wachtwoord (admin)
 
 Admin kan in **Admin → Gebruikers** op `reset pw` klikken bij een user, een nieuw tijdelijk wachtwoord opgeven, waarna die user bij volgende login weer een nieuw eigen wachtwoord moet kiezen.
+
+### Callsign per user
+
+Bij meerdere mensen die vanaf dezelfde gateway/companion uitzenden ziet de ontvangende kant alleen de node-naam — niet wie van de web-users het bericht heeft gestuurd. Met een **callsign** voeg je een kort prefix toe aan elk uitgaand bericht.
+
+- Klik op het avatar-icoon → **Callsign instellen…**
+- Vul 1-3 tekens of emoji in (bv. `DMH`, `PA3`, `🚀✨`). Leeg betekent uit.
+- Bij verzenden wordt de tekst geprefixt: `[DMH] hallo allemaal`.
+
+Per-user, self-serve — admins hoeven niets te beheren. De callsign wordt opgeslagen in de DB; bestaande sessies worden direct geüpdate zonder her-login.
 
 ---
 
@@ -367,6 +380,25 @@ Drie types op de companion (in de **Channels**-admin-pagina te beheren):
 In de tree onder **Chat** staan alle slots als klikbare items. Naast de admin-route kun je hashtag-channels ook snel toevoegen via de `+ hashtag` snelkoppeling in de tree zelf.
 
 Per kanaal kan optioneel een **flood-scope** worden ingesteld (bv. `#europa`) — vóór elke send naar dat kanaal wordt `set_flood_scope()` op de companion aangeroepen.
+
+---
+
+## Threading
+
+Wanneer een gesprek bestaat uit meerdere berichten over hetzelfde onderwerp, helpt threading om die in één blok te zien.
+
+**Hoe werkt 't:**
+- Bij een bericht waarop replies bestaan verschijnt tussen tijd en afzender een `💬N`-badge (N = aantal replies).
+- Klik op de badge → de chat filtert naar root + alle descendants. Boven het log verschijnt een gele banner met snippet en "← terug naar alle".
+- Buiten thread-modus blijft de chat gewoon chronologisch.
+
+**Hoe worden replies gedetecteerd (hybride):**
+- **Expliciet:** klik op een bericht → in het detail-paneel "Reply" — vult `@[Afzender]` in de input én markeert intern dat de volgende send een reply is op die msg (`parent_id` in DB).
+- **Heuristisch:** als een ander bericht begint met `@[X]` en X heeft binnen 30 min een eigen bericht in hetzelfde kanaal verstuurd, wordt 't automatisch als reply op dat msg behandeld. Geen DB-persistentie nodig — werkt ook bij berichten van non-web-clients.
+
+**Toggle uitzetten:** avatar-menu → "Threading-indicators: aan/uit". Per browser opgeslagen in localStorage. Uit = geen badges, geen klikbare filter.
+
+**Wat onthouden blijft over restarts:** alleen expliciete Reply-relaties (via DB-veld `parent_id`). Mention-heuristiek wordt elke render opnieuw berekend.
 
 ---
 
@@ -448,6 +480,10 @@ De gateway koppelt zelf alle `RX_LOG_DATA`-instances op `pkt_hash` om alle ontva
 
 Telt alleen DM's mee — channels hebben geen ack-mechanisme. De percentage gaat over outgoing DM's binnen de gekozen periode.
 
+### Repeaters
+
+Sinds v1.1.030 staat het Repeaters-paneel onder **Admin → Repeaters** (was eerder Rapportages → Repeaters). Niet-admins zien dit paneel niet meer; de bijbehorende endpoints zijn ook admin-only. Repeater-favorieten zijn nog steeds per-user opgeslagen — maar omdat alleen admins toegang hebben heeft elke admin zijn eigen favorieten-set.
+
 ### Repeater-namen in pad-visualisatie
 
 De `[hex]`-pillen in de Pad-sectie krijgen een naam-pil (`[NL-020-Involver/RPT2]`) zodra de companion een advert van die repeater heeft gehoord en hem als contact heeft opgeslagen. Bij `Auto-add adverts` aan vult dat zich vanzelf na een uur of wat draaien.
@@ -485,9 +521,75 @@ Achter de schermen pingt de gateway elke 60 seconden de companion. Drie missers 
 | DM faalt met `not found`-toast                   | Companion kent contact niet — wacht op advert of zet Auto-add aan                    |
 | Geen RSSI in detail-pane                         | Firmware geeft RSSI niet altijd op channel-msg-events; SNR + hops blijven werken     |
 | Bot reageert niet                                | Bot reageert alleen op `@[<naam>] ?keyword`; niet op kale `?keyword`                  |
-| Web UI werkt na update niet meer                 | Browser-cache; hard refresh (Cmd-Shift-R / Ctrl-Shift-R)                              |
+| Web UI werkt na update niet meer                 | Browser-cache; hard refresh (Cmd-Shift-R / Ctrl-Shift-R). Cache-buster `?v=...` voorkomt dit meestal sinds v1.1.032 |
+| Knop in avatar-menu doet niets na update         | Static JS niet meegekopieerd. Controleer of `static/js/*.js` op de Pi compleet is, hard-refresh browser |
+| Chat-input valt onder Chrome URL-bar op mobiel   | Update naar ≥v1.1.029 (gebruikt `100dvh` ipv `100vh`)                                  |
+| Migratie-fout bij start na update                | Backup DB (kopieer `meshcore.db` weg) en check logs — schema-migraties zijn additief, bij ALTER-fout meestal corruptie in oude data |
 
 Voor diepere diagnose: start met `MESHCORE_DEBUG=1` om alle inkomende meshcore-events te zien.
+
+---
+
+## Updates / nieuwe versie deployen
+
+De gateway wordt versiebeheerd via `APP_VERSION` in `web.py` (`x.y.z`-formaat, zichtbaar onderin de tree). Static assets (`/static/app.css`, `/static/js/*.js`) hebben sinds v1.1.032 een `?v={{VERSION}}`-query — een versie-bump invalideert daarmee automatisch browser-cache.
+
+### Standaard update-procedure
+
+**1. Backup de database** (altijd, ook bij ogenschijnlijk onschuldige updates):
+
+```bash
+# Docker
+cp ./data/meshcore.db ./data/meshcore.db.bak-$(date +%Y%m%d)
+
+# Native (pas pad aan):
+cp /var/lib/meshcore/gateway.db /var/lib/meshcore/gateway.db.bak-$(date +%Y%m%d)
+```
+
+Schema-migraties zijn **additief** (alleen `ALTER TABLE ADD COLUMN`/`CREATE INDEX`) en bewaren bestaande data, maar een backup kost niets en geeft een terugval-punt bij een onverwacht probleem.
+
+**2. Pull / kopieer de nieuwe code.**
+- Docker: `git pull` + `docker compose up -d --build`
+- Native: `git pull` + `sudo systemctl restart meshcore-gateway`
+- Handmatige bestand-voor-bestand kopie naar Pi (bv. `scp`): zorg dat álle gewijzigde bestanden mee gaan (Python én static), anders ontstaan vreemde gedragingen.
+
+**3. Schema-migratie loopt automatisch bij start.** In de log zie je:
+
+```
+[*] db: ...
+    path=... new=False schema=migrated:X->Y integrity=ok
+```
+
+Bij `schema=ok` was er niks te migreren. Bij `migrated:X->Y` is een nieuwe versie gedraaid; bestaande tabellen kregen nieuwe kolommen met default-waarden.
+
+**4. Hard refresh in de browser**: meestal niet meer nodig dankzij de `?v=`-cache-buster, maar bij twijfel doe `Ctrl-Shift-R` (of `Cmd-Shift-R`).
+
+### Terugrollen bij problemen
+
+```bash
+# 1. Stop de gateway
+sudo systemctl stop meshcore-gateway        # of: docker compose down
+
+# 2. Code terug naar vorige versie
+git checkout <vorige-tag-of-hash>
+
+# 3. DB-backup terugzetten (alleen nodig als migratie schade heeft gedaan)
+cp ./data/meshcore.db.bak-YYYYMMDD ./data/meshcore.db
+
+# 4. Start opnieuw
+sudo systemctl start meshcore-gateway       # of: docker compose up -d --build
+```
+
+> De DB-backup terugzetten is alleen nodig als de migratie iets onverwachts heeft gedaan. Normaal kun je code terugdraaien zonder de DB aan te raken — eerdere versies negeren simpelweg de nieuwe kolommen.
+
+### Wat raken specifieke versies?
+
+Globale handleidingen bij grotere wijzigingen, zie `HANDOFF.md` voor de volledige changelog:
+
+| Versie  | Schema | Belangrijkste wijziging                                         |
+|---------|--------|-----------------------------------------------------------------|
+| 1.1.031 | 12→13  | Nieuwe kolom `users.callsign`                                   |
+| 1.1.033 | 13→14  | Nieuwe kolom `messages.parent_id` + index                       |
 
 ---
 
@@ -496,9 +598,21 @@ Voor diepere diagnose: start met `MESHCORE_DEBUG=1` om alle inkomende meshcore-e
 ```
 WebClient/
   gateway.py                          — entry-point: connectie + CLI + dispatch + webserver-startup
-  web.py                              — FastAPI + Socket.IO + alle web-endpoints + APP_HTML
+  web.py                              — FastAPI + Socket.IO + alle web-endpoints (renders templates/index.html)
   bot.py                              — bot-framework (DB-driven, variable-templates)
-  db.py                               — SQLAlchemy async + alle modellen
+  db.py                               — SQLAlchemy async + alle modellen + auto-migraties
+  templates/
+    index.html                        — Jinja2-template voor de chat-UI (header, tree, main, detail)
+  static/
+    app.css                           — alle styling + 3 mobile-breakpoints
+    js/
+      01-core.js                      — STATE + helpers + threading-tree-bouwer
+      02-tree.js                      — tree-rendering + view-switching (chat/admin/reports/contacts)
+      03-chat.js                      — chat-render + socketio + emoji-picker + thread-badges
+      04-admin.js                     — alle admin-views (radio/node/prefs/channels/contacten/bots/...)
+      05-reports.js                   — rapportages + repeater-management
+      06-detail.js                    — detail-paneel + path-visualisatie + Reply-flow
+      07-bootstrap.js                 — refresh-loops + auth/account + native notifs + threading-toggle
   meshcore.db                         — SQLite-database (auto-aangemaakt; in container: /data/meshcore.db)
   pyproject.toml                      — dependencies (Python 3.12+)
   requirements.txt                    — pinned deps voor pip / Docker-build
@@ -506,8 +620,11 @@ WebClient/
   docker-compose.yml                  — orchestratie met USB-device + volume + port
   .dockerignore                       — uitsluitingen voor docker-build context
   meshcore-gateway.service.example    — voorbeeld-systemd-unit (kopieer + aanpassen)
+  HANDOFF.md / HANDOFF new.md         — project-changelog en sessie-aantekeningen (zie HANDOFF.md voor volledige geschiedenis)
   README.md                           — dit bestand
 ```
+
+> **`LOGIN_HTML` / `SETUP_HTML`** zijn (bewust) inline strings in `web.py` — die pages zijn klein en hoeven geen template engine. De main chat-UI gebruikt wél Jinja2 + losse static-files. Wijzigingen aan de chat-UI gaan dus in `templates/index.html`, `static/app.css` en/of `static/js/*.js`.
 
 ---
 

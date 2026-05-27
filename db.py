@@ -36,7 +36,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 #      Bestaande user_contacts tabel wordt gedropt en opnieuw aangemaakt.
 # v11: + Bot tabel (admin-defined channel-bots met variable-templates)
 # v12: + UserFavoriteRepeater tabel (per-user favoriete repeaters → top van lijst)
-SCHEMA_VERSION = "12"
+SCHEMA_VERSION = "14"
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +78,11 @@ class Message(Base):
     expected_ack: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     ack_status:   Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     acked_at:     Mapped[Optional[datetime]] = mapped_column(nullable=True)
+
+    # Threading: id van de message waarop dit een reply is. NULL = top-level.
+    # Wordt gezet bij outgoing als de user klikt op Reply; voor inkomende
+    # berichten alleen via mention-heuristiek client-side, niet persisted.
+    parent_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
 
     __table_args__ = (
         Index("ix_msg_channel_lookup", "kind", "channel_idx", "ts"),
@@ -207,6 +212,10 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(16), default="user")  # 'admin' | 'user'
     password_hash: Mapped[str] = mapped_column(Text, default="")
     allowed_views: Mapped[str] = mapped_column(Text, default='["chat"]')  # JSON
+    # Korte identifier die als '[XXX] ' voor uitgaande berichten gezet wordt
+    # zodat ontvangers zien welke web-user het verstuurd heeft. Vrij Unicode
+    # (incl. emoji); leeg = geen suffix.
+    callsign: Mapped[str] = mapped_column(String(64), default="")
     # True = wachtwoord moet bij eerste login worden gewijzigd (tijdelijk ww van admin)
     must_change_password: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
@@ -346,6 +355,26 @@ async def init_db(path: str | Path = "meshcore.db") -> DBHealthReport:
             await conn.execute(text("ALTER TABLE messages ADD COLUMN ack_status VARCHAR(8) DEFAULT NULL"))
             await conn.execute(text("ALTER TABLE messages ADD COLUMN acked_at TIMESTAMP DEFAULT NULL"))
 
+        # v12 → v13: User.callsign kolom (3-tekens-suffix voor uitgaande msgs)
+        ucols_res = await conn.execute(text("PRAGMA table_info(users)"))
+        ucols = {r[1] for r in ucols_res.fetchall()}
+        if ucols and "callsign" not in ucols:
+            await conn.execute(text(
+                "ALTER TABLE users ADD COLUMN callsign VARCHAR(64) DEFAULT ''"
+            ))
+
+        # v13 → v14: Message.parent_id kolom (threading)
+        mcols2 = await conn.execute(text("PRAGMA table_info(messages)"))
+        mcolset = {r[1] for r in mcols2.fetchall()}
+        if mcolset and "parent_id" not in mcolset:
+            await conn.execute(text(
+                "ALTER TABLE messages ADD COLUMN parent_id INTEGER DEFAULT NULL"
+            ))
+            # Aparte index (CREATE INDEX is safe als de tabel al bestaat)
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_messages_parent_id ON messages(parent_id)"
+            ))
+
         # v9 → v10: user_contacts.pubkey_prefix → pubkey (vol 32-byte hex).
         # SQLite kan kolom niet hernoemen zonder migratie-overhead, dus
         # droppen + her-create maakt 'm opnieuw met de nieuwe kolomnaam.
@@ -431,6 +460,7 @@ async def save_message(
     raw: Optional[Any] = None,
     expected_ack: Optional[str] = None,
     ack_status: Optional[str] = None,
+    parent_id: Optional[int] = None,
 ) -> Message:
     """Persisteer één bericht. `raw` mag elk JSON-serializable object zijn."""
     Session = _require_session()
@@ -454,6 +484,7 @@ async def save_message(
         raw=raw_json,
         expected_ack=expected_ack,
         ack_status=ack_status,
+        parent_id=parent_id,
     )
     async with Session() as s:
         s.add(msg)
@@ -935,6 +966,18 @@ async def set_user_password_hash(username: str, password_hash: str,
 async def reset_user_password(username: str, password_hash: str) -> bool:
     """Admin-reset: zet tijdelijk wachtwoord en forceer wijziging bij volgende login."""
     return await set_user_password_hash(username, password_hash, must_change_password=True)
+
+
+async def set_user_callsign(username: str, callsign: str) -> bool:
+    """Zet de callsign van een user (leeg = uit)."""
+    Session = _require_session()
+    async with Session() as s:
+        u = await s.get(User, username)
+        if u is None:
+            return False
+        u.callsign = callsign or ""
+        await s.commit()
+    return True
 
 
 async def touch_user_login(username: str) -> None:
