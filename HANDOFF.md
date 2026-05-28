@@ -3,6 +3,10 @@
 Stand: versie 1.1.034. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode-bestanden gaan apart mee.
 
+> **Voor per-versie wijzigingen / changelog** zie `CHANGELOG.md`. Dit bestand
+> is een referentie-doc (architectuur, schema, voltooide features, caveats,
+> dev-workflow, backlog) — niet chronologisch.
+
 ---
 
 ## 1. Wat het is
@@ -36,7 +40,8 @@ SQLAlchemy async + aiosqlite, uvicorn. Geen build-step; één venv.
 | `db.py` | SQLAlchemy async, alle modellen + helpers. `SCHEMA_VERSION` + auto-migraties in `init_db()`. |
 | `Dockerfile`, `docker-compose.yml`, `.dockerignore` | Container (python:3.12-slim, non-root, USB-device passthrough, `/data`-volume). |
 | `meshcore-gateway.service.example` | systemd-unit template (native installatie). |
-| `README.md` | Volledige gebruikershandleiding (setup, container, systemd, caveats). |
+| `README.md` | Volledige gebruikershandleiding (setup, container, systemd, caveats, update-procedure). |
+| `CHANGELOG.md` | Per-versie wijzigingen (chronologisch, append-only). Voorheen `HANDOFF new.md`. |
 | `requirements.txt` / `pyproject.toml` / `.python-version` | Deps; Python `>=3.12`. |
 
 ---
@@ -62,10 +67,19 @@ SQLAlchemy async + aiosqlite, uvicorn. Geen build-step; één venv.
   (16-byte AES, zelf gegenereerd). `Channel.kind` onderscheidt ze.
 - **DB-migraties**: forward-only, additief. `init_db()` doet `create_all` +
   handmatige `ALTER TABLE` / `DROP+recreate` per versie-stap.
+- **Static-asset cache-buster**: `?v={{VERSION}}` op `<link>` + `<script>` URLs
+  in `templates/index.html`. Elke `APP_VERSION` bump invalideert browser-cache —
+  geen hard-refresh meer nodig na een update.
+- **Threading is hybride**: expliciet via `Message.parent_id` (DB-persisted, set
+  door Reply-knop) + heuristisch via `@[X]`-mention-detectie client-side
+  (binnen 30 min, niet persisted). Render bouwt boom uit beide signalen.
+- **Callsign-prefix** voor uitgaande berichten: zit in de message-text als
+  `[CS] ...` (niet in sender-name). Bewust — node-name aanpassen per send zou
+  USB-traffic + advert-confusie veroorzaken.
 
 ---
 
-## 4. DB-schema (`SCHEMA_VERSION = "12"`)
+## 4. DB-schema (`SCHEMA_VERSION = "14"`)
 
 Modellen in `db.py`: `Message`, `Meta`, `Channel`, `Hashtag` (deprecated sinds
 v4), `User`, `UserContact`, `Bot`, `UserFavoriteRepeater`.
@@ -75,7 +89,10 @@ v5 User · v6 `User.must_change_password` · v7 `Channel.scope` · v8 Message
 ack-tracking (`expected_ack`/`ack_status`/`acked_at`) · v9 UserContact ·
 v10 `UserContact.pubkey` volledige 32-byte hex (tabel gedropt+herbouwd) ·
 v11 Bot · v12 UserFavoriteRepeater (per-user favoriete repeaters/rooms;
-composite-key `username + pubkey`).
+composite-key `username + pubkey`) · **v13 `User.callsign`** (VARCHAR(64),
+default `''`, vrij Unicode incl. emoji) · **v14 `Message.parent_id`**
+(Integer, nullable, indexed — threading; gezet bij outgoing als user Reply
+heeft geklikt).
 
 `Message.peer` = 12-char pubkey-prefix. `UserContact.pubkey` en
 `UserFavoriteRepeater.pubkey` = volledige 64-char hex. Die inconsistentie
@@ -127,6 +144,27 @@ vereist op enkele plekken conversie.
   ze niet als DM in de historie belanden.
 - **Deployment**: Docker + docker-compose + systemd-template; `--reset-admin`
   is een one-shot zonder USB-claim.
+- **Callsign per user** (v1.1.031): self-serve via avatar-menu, 1-3+ tekens of
+  emoji. Wordt als `[CS] ` voor uitgaande berichten geprependt. Optioneel —
+  leeg = uit. Sessie-sync zodat verandering meteen werkt zonder her-login.
+- **Threading** (v1.1.033-034): expliciete Reply-knop persisteert `parent_id`;
+  client-side mention-heuristiek koppelt msgs met `@[X]`-prefix aan recente
+  msgs van X (30 min window). Badge `💬N` tussen tijd en afzender op msgs met
+  replies; klik filtert de chat naar root + descendants. Globale toggle in
+  avatar-menu (localStorage). Reply-banner boven chat-input toont wat je
+  reply't, met ×-annuleer.
+- **Repeaters-paneel naar Admin-tak** (v1.1.030): zat eerder onder Rapportages,
+  is nu admin-only (zowel UI-hide als backend route-check). Niet-admins zien
+  alleen Rapportages → Overzicht.
+- **Mobile-responsive UI** (v1.1.022-029): 3 breakpoints (≤767px / 768-1199 /
+  ≥1200). Mobile: hamburger-drawer voor tree, bottom-sheet voor detail,
+  ≥40px tap targets, 16px input-font (geen iOS-zoom). Body gebruikt `100dvh`
+  (dynamic viewport height) zodat Chrome/Safari URL-bar geen content
+  wegduwt. Header truncate netjes met ellipsis op smal scherm; portrait
+  verbergt battery+uptime status-items (≤480px) om hoofd-elementen te
+  ontruimen.
+- **Static-asset cache-buster** (v1.1.032): `?v={{VERSION}}` op CSS/JS URLs.
+  Versie-bump invalideert browser-cache automatisch.
 
 ---
 
@@ -145,9 +183,24 @@ vereist op enkele plekken conversie.
 - **Bot-cache TTL 30s**: admin-wijzigingen aan bots zijn pas na ≤30s actief.
 - **In-memory sessies**, geen CSRF, geen rate-limiting op `/login`. Acceptabel
   voor home-LAN, niet voor blootstelling op internet.
-- **`User.allowed_views`** kolom bestaat maar wordt niet via UI beheerd en niet
-  afgedwongen — per-user menu-permissies zijn dus half-af (alleen role-based
-  admin-hide werkt).
+- **`User.allowed_views`** kolom bestaat maar is **inactief**. Sinds v1.1.030
+  is alle admin-only functionaliteit (incl. Repeaters) verplaatst naar de
+  Admin-tak met pure role-based check; per-user fine-grained menu-permissies
+  zijn niet meer op de roadmap. Kolom blijft staan voor eventueel later
+  gebruik; verwijderen kost een migratie.
+- **Callsign-prefix** zit in de message-text als `[XX] tekst` — ontvangers
+  zien "NodeNaam: [XX] tekst", niet "NodeNaam (XX): tekst". Aanpassen van de
+  node-name per send zou USB-traffic en advert-confusie veroorzaken (bewust
+  afgewezen). Validatie: max 16 codepoints, geen control-chars.
+- **Threading-heuristiek** is `_inferredParent` only — niet persisted naar DB.
+  Bij refresh wordt-ie opnieuw afgeleid uit `@[X]`-prefixes binnen 30 min. Bij
+  msg-history ouder dan dat window zijn replies dus niet meer aan elkaar
+  gekoppeld (tenzij Reply-knop is gebruikt, want die zet `parent_id` in DB).
+  Verder: `extractMentionTarget` matcht alleen `@[NAAM]` aan het begin van de
+  tekst — `@[NAAM]` halverwege wordt niet als reply gezien.
+- **Reply naar eigen msg werkt niet**: de Reply-knop disabled zichzelf op
+  outgoing msgs. Wel kan je een out-msg manueel mention'en — heuristiek kan
+  dan ook eigen out-msgs als parent matchen.
 - **`txt_type ≠ 0` wordt niet meer als DM opgeslagen** (filter in
   `on_contact_msg`). Reden: CLI-responses van repeaters mogen niet in de
   DM-historie verschijnen. Als jouw firmware ooit gesigneerde DM's met
@@ -195,56 +248,43 @@ JS mag apostroffen en kale `\n` bevatten, en alle `{...}` zijn gewoon JS —
 Jinja2 gebruikt `{{ ... }}` voor zijn placeholders en grijpt nooit losse
 `{...}`. Versienummer: bump de **z** in `APP_VERSION` (`web.py`) bij elke
 gevraagde wijziging; Jinja2 vult 'm in via `{{VERSION}}` in
-`templates/index.html`.
+`templates/index.html`. Sinds v1.1.032 wordt `{{VERSION}}` óók als
+`?v=...`-query op alle CSS/JS-URLs gezet → versie-bump invalideert browser-cache
+zonder dat user hard-refresh moet doen.
 
 `LOGIN_HTML` / `SETUP_HTML` zijn nog inline Python-strings (klein, `{err}` via
-`.replace()`).
+`.replace()`). Sinds v1.1.031 hebben ze ook viewport meta + 16px input-font
+voor mobile-bruikbaarheid.
+
+**Update-procedure op een productie-Pi:** zie `README.md` sectie "Updates /
+nieuwe versie deployen" — kort: DB-backup (`cp meshcore.db meshcore.db.bak`)
+→ code pullen → service restart → schema-migratie loopt automatisch. Hard
+refresh meestal niet nodig dankzij cache-buster.
 
 ---
 
 ## 8. Eerstvolgende stappen (niet gedaan, geprioriteerd)
 
-**Medium — onderhoud/robuustheid:**
-1. ~~`web.py` opsplitsen~~ — gedaan in v1.1.018 (templates/ + static/, Jinja2)
-   en v1.1.021 (JS opgesplitst in `static/js/01..07-*.js`, plain scripts).
-2. ~~Server-side caching van `/admin/state`~~ — gedaan in v1.1.020.
-   TTL `_ADMIN_STATE_CACHE_TTL_SECS = 5.0`, cache wordt automatisch
-   geïnvalideerd door een HTTP-middleware na elke succesvolle 2xx-respons op
-   `POST/PUT/PATCH/DELETE /admin/*` (behalve `/admin/state` zelf). UI mag
-   `?fresh=1` meegeven om de cache te bypassen. Tip bij toekomstige
-   wijzigingen die buiten de admin-routes om de node-state veranderen:
-   `_invalidate_admin_state_cache()` aanroepen.
-3. Smoke-tests voor `db.py`-helpers, password-hashing, schema-migraties.
+> Afgeronde items uit eerdere sessies (web.py-split, JS-modularisatie,
+> /admin/state-cache, watchdog supervisor-restart, mobile fase A incl.
+> portrait + 100dvh, Repeaters→Admin, callsign, threading) staan niet meer
+> in deze lijst — zie `CHANGELOG.md`.
 
-**Functioneel — eerder besproken, uitgesteld:**
-4. Per-user menu-permissies afmaken: UI in Admin → Gebruikers om
-   `allowed_views` te zetten + frontend de tree daarop laten filteren.
-5. QR import/export van contacten (`export_contact`/`import_contact` bestaan
-   al als endpoints in `web.py`, UI is bewust nog niet gebouwd). Camera-scan
-   vereist een externe JS-lib (jsQR).
-6. Mobiel-responsive — **fase A gedaan in v1.1.022** (layout-overlay):
-   3 breakpoints (mobile ≤767px, tablet 768-1199, desktop ≥1200). Op mobile:
-   hamburger linksboven → tree als slide-in drawer (84vw, max 320px); detail
-   wordt bottom-sheet die opent bij msg/repeater-select; backdrop sluit
-   drawer. Op tablet: tree zichtbaar smaller (200px), detail als slide-in
-   overlay van rechts (340px). Touch-targets ≥40px, inputs 16px font (geen
-   iOS-zoom). Tabellen: nu nog horizontaal-scrollable als veilige
-   fallback. **Fase B (refinement, todo)**: tabellen → kaart-stijl op mobile
-   (per-rij `data-label="..."`-attributes nodig in dynamische HTML);
-   chat-controls compacter (filter + tijd-knoppen wrappen nu lelijk);
-   admin-forms grondiger; landscape-tablet tweaks.
-7. ~~Watchdog auto-reconnect bij USB-disconnect~~ — gedaan in v1.1.020 als
-   "supervisor-restart". Na `WATCHDOG_HARD_FAIL_THRESHOLD` opeenvolgende
-   mislukte heartbeats (default 5 × 60s ≈ 5 min) zet de watchdog
-   `state.watchdog_restart_requested=True` + `stop.set()`. `main()` exit
-   daarna met code 75 (EX_TEMPFAIL) → systemd `Restart=always` /
-   docker-compose `restart: unless-stopped` brengt 'm opnieuw op. Geen
-   in-place `mc`-reconnect (vereist swap van alle refs in dispatch / bots /
-   webapp — te complex). Drempel overschrijfbaar via env-var
-   `MESHCORE_WATCHDOG_HARD_FAIL`. systemd-template: `Restart=always`.
+**Functioneel — eerstvolgend:**
+1. **Callsign-UI als HTML-modal** ipv `prompt()`. Op desktop Chrome biedt
+   `prompt()` geen emoji-picker; modal kan de bestaande
+   `#emoji-picker`-component hergebruiken.
+2. **QR import/export van contacten**. `export_contact`/`import_contact`
+   bestaan al als endpoints in `web.py`, UI is bewust nog niet gebouwd.
+   Camera-scan vereist externe JS-lib (jsQR).
+3. **Mobile fase B** — tabellen → kaart-stijl op mobile (per-`<td>`
+   `data-label="..."`-attributes nodig in dynamische HTML; raakt
+   02-tree.js / 04-admin.js / 05-reports.js). Chat-controls compacter
+   (filter + tijd-knoppen wrappen nu lelijk op smal scherm). Admin-forms
+   grondiger. Landscape-tablet tweaks.
 
 **Repeater-management — Fase B (convenience-forms):**
-8. Wrapper-knoppen/forms voor de overige veelgebruikte CLI-commando's:
+4. Wrapper-knoppen/forms voor de overige veelgebruikte CLI-commando's:
    - Radio-settings (`set radio <freq> <bw> <sf> <cr>`) + tx-power.
    - Advert-intervallen (auto-flood + zero-hop).
    - Owner-info (`get name` / `set name X`).
@@ -252,11 +292,22 @@ gevraagde wijziging; Jinja2 vult 'm in via `{{VERSION}}` in
    - Admin-wachtwoord wijzigen.
    - Region-management.
    Exacte syntax-bron: `meshcore-cli/REPEATER_COMMANDS.md` op GitHub.
-9. Telemetry-paneel via `req_telemetry_sync` (LPP-decoded).
-10. Sessie-keepalive of zichtbare countdown van repeater-login.
+5. Telemetry-paneel via `req_telemetry_sync` (LPP-decoded).
+6. Sessie-keepalive of zichtbare countdown van repeater-login.
+
+**Onderhoud / robuustheid:**
+7. Smoke-tests voor `db.py`-helpers, password-hashing, schema-migraties.
+8. Threading-performance: huidige `isInThread` is O(N) per check (lineaire
+   scan in `STATE.msgs`). Voor typische 30-100 msgs prima; bij 1000+ in
+   één view zou een hash-map met parent-lookup nodig zijn.
 
 **Laag — alleen bij groei / minder vertrouwd netwerk:**
-11. CSRF-tokens op admin-POSTs, rate-limiting op `/login`, persistente sessies.
+9. CSRF-tokens op admin-POSTs, rate-limiting op `/login`, persistente sessies.
+
+**Mogelijk overbodig (overwegen op te ruimen):**
+10. `User.allowed_views`-kolom (zie sectie 6). Sinds Repeaters in Admin staat
+    is er geen use-case meer; kolom kost niets maar verwart toekomstige
+    lezers. Drop via een migratie kost ~10 minuten.
 
 ---
 

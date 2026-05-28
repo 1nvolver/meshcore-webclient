@@ -620,7 +620,8 @@ WebClient/
   docker-compose.yml                  — orchestratie met USB-device + volume + port
   .dockerignore                       — uitsluitingen voor docker-build context
   meshcore-gateway.service.example    — voorbeeld-systemd-unit (kopieer + aanpassen)
-  HANDOFF.md / HANDOFF new.md         — project-changelog en sessie-aantekeningen (zie HANDOFF.md voor volledige geschiedenis)
+  HANDOFF.md                          — referentie-doc: architectuur, DB-schema, voltooide features, caveats, backlog
+  CHANGELOG.md                        — per-versie wijzigingen, chronologisch (v1.1.018 → huidig)
   README.md                           — dit bestand
 ```
 

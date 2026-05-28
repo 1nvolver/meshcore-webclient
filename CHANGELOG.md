@@ -1,10 +1,13 @@
-# Handoff — MeshCore WebClient sessie 2026-05-25 / 26
+# Changelog — MeshCore Gateway Web Client
 
-**Project:** `/Users/dhammel/Library/CloudStorage/OneDrive-Flight815B.V/Development/Python/Meshcore/WebClient`
-**Branch:** `refactor/split-web` (eerder gemerged naar `main`; user heeft feitelijk maar 1 branch)
-**Eindstand bij dit handoff-moment:** **v1.1.034** (threading fase 2 — badges + Reply-flow + filter-view + toggle)
+Per-versie wijzigingen, chronologisch (nieuwste onderaan).
 
-Authoritative project-doc: zie `HANDOFF.md` in de repo — die is bijgewerkt tot en met v1.1.022 inclusief mobile-fase-A. v1.1.023/024 zijn cosmetische fixes erbovenop.
+- **Huidige versie:** v1.1.034 (zie laatste sectie).
+- **Voor architectuur, DB-schema, voltooide features en backlog:** zie `HANDOFF.md`.
+- **Voor end-user setup / deploy / update-procedure:** zie `README.md`.
+
+Versie-conventie: `x.y.z` waar `z` bumpt bij elke door de user gevraagde
+wijziging. Pure doc-wijzigingen (zoals deze rename) krijgen geen versie-bump.
 
 ---
 
