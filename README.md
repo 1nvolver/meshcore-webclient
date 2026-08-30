@@ -392,8 +392,44 @@ docker run --rm -v meshcore-data:/data -v "$PWD:/in" alpine \
 docker start meshcore-gateway
 ```
 
-Let op: `docker volume rm meshcore-data` of een stack verwijderen mét volumes
-wist je historie definitief.
+#### Named volume of bind mount?
+
+De stack gebruikt bewust een **named volume**. Dat overleeft een
+container-restart, een *Pull and redeploy* en een image-update — de DB is dus
+al persistent, daar hoef je niets extra's voor te doen.
+
+Wat 'm wél wist: `docker volume rm meshcore-data`, een stack verwijderen mét
+volumes, of een `docker system prune --volumes` op de host.
+
+Wil je de database liever als een gewoon bestand op een pad dat jij kiest —
+makkelijker te backuppen met je normale tooling, en immuun voor een
+volume-prune — vervang het volume dan door een bind mount:
+
+```yaml
+    volumes:
+      - /opt/meshcore/data:/data
+```
+
+En laat het `volumes:`-blok onderaan de compose weg. Maak de map vooraf aan en
+zet 'm op uid 1000, want de container draait als niet-root user:
+
+```bash
+sudo mkdir -p /opt/meshcore/data
+sudo chown 1000:1000 /opt/meshcore/data
+```
+
+Sla je die `chown` over, dan start de container wel maar kan hij de DB niet
+aanmaken — je ziet dan een `unable to open database file` in de logs.
+
+Een bestaande DB verhuizen van het volume naar dat pad:
+
+```bash
+docker stop meshcore-gateway
+docker run --rm -v meshcore-data:/data -v /opt/meshcore/data:/out alpine \
+  cp /data/meshcore.db /out/meshcore.db
+sudo chown 1000:1000 /opt/meshcore/data/meshcore.db
+# daarna de stack aanpassen en redeployen
+```
 
 ### Updaten en terugrollen
 
