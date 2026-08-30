@@ -18,7 +18,9 @@ services:
     restart: unless-stopped
 
     ports:
-      - "8080:8080"          # Web UI — host:container
+      # host:container — 8080 is op deze host al bezet door een andere
+      # container; binnen de container blijft de app op 8080 luisteren.
+      - "8180:8080"
 
     devices:
       # De USB companion-radio. Controleer op de host met:

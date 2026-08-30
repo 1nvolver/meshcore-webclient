@@ -725,6 +725,9 @@ draaiende image hetzelfde is als wat getest is.
   `build:` (Portainer-stacks kunnen dat niet altijd).
 - `devices: /dev/ttyACM0:/dev/ttyACM0` + `group_add: ["20"]` voor serial-toegang
   als niet-root user. Bewust geen `privileged: true`.
+- Host-poort **8180** → container-poort 8080 (8080 was op de target-host al
+  bezet). Alleen de host-kant verschilt; `MESHCORE_WEB_PORT` en de
+  healthcheck blijven 8080, want die leven binnen de container.
 - Named volume `meshcore-data` met expliciete `name:` zodat Portainer er geen
   stack-prefix voor plakt en de DB een redeploy overleeft.
 - json-file logging met rotatie (10m × 3), `TZ=Europe/Amsterdam`.

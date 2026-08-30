@@ -242,12 +242,18 @@ automatisch aan de repo, zodat de repo-README op de package-pagina verschijnt.
 Portainer → **Stacks** → *Add stack* → naam `meshcore-gateway` → *Web editor* →
 inhoud van `portainer-stack.yml` plakken → **Deploy**.
 
-Twee dingen nog vóór deploy controleren op de host:
+Drie dingen nog vóór deploy controleren op de host:
 
 ```bash
 ls -l /dev/ttyACM*          # klopt het device-pad?
 getent group dialout        # klopt GID 20?
+ss -ltnp | grep ':8180'     # is de host-poort vrij?
 ```
+
+De stack mapt **host-poort 8180 → container-poort 8080** (8080 was op de
+target-host al bezet). Alleen de linkerkant van `ports:` verandert als je een
+andere poort wilt; `MESHCORE_WEB_PORT` en de healthcheck blijven 8080, want
+die leven binnen de container. De UI draait dus op `http://<host>:8180/`.
 
 Pin in productie liever een vaste versie in plaats van `latest`. Dat kan via
 de env-var in de stack:
