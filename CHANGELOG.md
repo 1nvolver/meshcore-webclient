@@ -2,7 +2,7 @@
 
 Per-versie wijzigingen, chronologisch (nieuwste onderaan).
 
-- **Huidige versie:** v1.1.048 (zie laatste sectie).
+- **Huidige versie:** v1.1.049 (zie laatste sectie).
 - **Voor architectuur, DB-schema, voltooide features en backlog:** zie `HANDOFF.md`.
 - **Voor end-user setup / deploy / update-procedure:** zie `README.md`.
 
@@ -689,6 +689,63 @@ Test: `/login` POST werkt weer, cookie krijgt 7d max_age, sliding-refresh
 draait via `_sliding_session_cookie` middleware.
 
 **Lint**: PY OK, JS schoon, render-smoke OK.
+
+### v1.1.049 — Containerisatie: GitHub Actions → GHCR → Portainer
+
+User-wens: de app als container draaien op een Portainer-host (x86), image
+gebouwd door GitHub Actions, gepubliceerd op GHCR onder `1nvolver`.
+
+**Keuze: pull-based deploy.** CI bouwt en pusht, Portainer pullt. Alternatief
+was build-on-host via een Portainer git-stack; afgewezen omdat de host dan
+build-context + buildkit nodig heeft en je niet kunt garanderen dat het
+draaiende image hetzelfde is als wat getest is.
+
+**`Dockerfile`:**
+- **Build-breker gefixt**: `useradd -m -u 1000 -g 1000 app` faalde omdat groep
+  1000 niet bestaat in `python:3.12-slim`. Nu eerst `groupadd -g 1000 app`.
+  Dit was nooit opgevallen — er is lokaal nooit een `docker build` gedraaid.
+- `HEALTHCHECK` toegevoegd op `/healthz` (bestond al als unauthenticated route,
+  raakt de DB niet). Via `urllib` want de slim-image heeft geen curl/wget.
+  Portainer toont de container hierdoor als healthy/unhealthy.
+- OCI-labels (`image.source` koppelt het package aan de repo op GHCR).
+
+**`.github/workflows/ci.yml` (nieuw):**
+- Job `checks` op elke push/PR: `ast.parse` van de 4 Python-modules ·
+  `node --check` per file in `static/js/` · Jinja2 render-smoke van
+  `index.html` · `docker compose config -q` op beide compose-bestanden ·
+  guard die faalt als `APP_VERSION` niet in `HANDOFF.md` voorkomt.
+- Job `build`: buildx + `docker/metadata-action` → GHCR. `linux/amd64`.
+  Tags vanaf main: `latest`, `<APP_VERSION>`, `sha-<short>`; git-tags `v*`
+  leveren ook hun eigen tag. PR's bouwen wél maar pushen níét.
+- Auth via `GITHUB_TOKEN` + `permissions: packages: write` — geen secrets.
+- gha-cache aan (`cache-from/to: type=gha`).
+
+**`portainer-stack.yml` (nieuw):**
+- Pullt `ghcr.io/1nvolver/meshcore-webclient:${MESHCORE_TAG:-latest}`, geen
+  `build:` (Portainer-stacks kunnen dat niet altijd).
+- `devices: /dev/ttyACM0:/dev/ttyACM0` + `group_add: ["20"]` voor serial-toegang
+  als niet-root user. Bewust geen `privileged: true`.
+- Named volume `meshcore-data` met expliciete `name:` zodat Portainer er geen
+  stack-prefix voor plakt en de DB een redeploy overleeft.
+- json-file logging met rotatie (10m × 3), `TZ=Europe/Amsterdam`.
+
+**`docker-compose.yml`:** teruggebracht tot puur lokaal bouwen/testen
+(`image: meshcore-gateway:dev`, `container_name: ...-dev`) zodat 't niet met
+de productie-stack botst. `group_add` ook hier toegevoegd.
+
+**`README.md`:** container-sectie herschreven (twee compose-bestanden,
+by-id device-pad, group_add ipv privileged, healthcheck, volume-backup) +
+nieuwe sectie "Deploy via GitHub Actions → GHCR → Portainer" met de
+package-visibility-stap, stack-deploy, tag-pinning en update/rollback-procedure.
+
+**`.gitignore`:** `data/` toegevoegd (lokale compose-bind-mount).
+
+**Git:** `refactor/split-web` (7 commits vóór op `main`) fast-forward gemerged
+naar `main`; `main` is de default branch waar CI op triggert.
+
+**Lint**: Python schoon, JS schoon, beide compose-bestanden valide YAML,
+workflow-YAML valide. Image is nog niet lokaal gebouwd (geen Docker in de
+dev-omgeving) — de eerste echte build is de CI-run.
 
 ---
 

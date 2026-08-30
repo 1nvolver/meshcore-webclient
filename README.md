@@ -102,7 +102,15 @@ Open dan `http://<pi-ip>:8080/` op je telefoon/tablet/laptop.
 
 ## Container (Docker / docker-compose)
 
-Het project is gecontaineriseerd voor makkelijke deployment op een Pi. **USB-passthrough werkt alleen op Linux-hosts** (Pi, Linux-PC). macOS/Windows-Docker-desktop hosten geen USB door — daar moet je de gateway native draaien.
+Het project is gecontaineriseerd voor makkelijke deployment op een Pi of NAS. **USB-passthrough werkt alleen op Linux-hosts** (Pi, Linux-PC, NAS). macOS/Windows-Docker-desktop hosten geen USB door — daar moet je de gateway native draaien.
+
+Er zijn twee compose-bestanden:
+
+| Bestand | Waarvoor |
+|---|---|
+| `docker-compose.yml` | lokaal bouwen en testen (`build: .`) |
+| `portainer-stack.yml` | productie — pullt het image dat CI naar GHCR pusht, bouwt niets |
+
 
 ### Snel starten met docker-compose
 
@@ -136,10 +144,25 @@ docker run -d \
 
 ### Container-aandachtspunten
 
-- **USB-device**: pas `/dev/ttyACM0` aan in `docker-compose.yml` (`devices:`-blok) als je companion een ander pad heeft. Check op de host met `ls /dev/ttyACM*` of `lsusb`.
-- **Permissions**: de container draait als non-root user `app` (UID 1000) in groep `dialout`. Als je host een andere group-id voor dialout gebruikt, kan een permission-error optreden — fix met `--group-add` op de host-uid van dialout.
-- **Persistente data**: alleen het `./data`-volume; bij `docker compose down -v` ben je je DB kwijt. Backup `./data/meshcore.db` regelmatig.
-- **Updates**: `docker compose up -d --build` na een code-pull. Schema-migraties draaien automatisch.
+- **USB-device**: pas `/dev/ttyACM0` aan in `devices:` als je companion een ander pad heeft. Check op de host met `ls -l /dev/ttyACM* /dev/ttyUSB*` of `lsusb`.
+- **Stabiel device-pad**: `/dev/ttyACM0` kan verspringen als er meer USB-serieel aanhangt of na een replug. Stabieler is het by-id-pad:
+  ```bash
+  ls -l /dev/serial/by-id/
+  # bv. usb-Seeed_XIAO_nRF52840-if00
+  ```
+  Gebruik dat pad dan links in `devices:` en houd rechts `/dev/ttyACM0`:
+  `- "/dev/serial/by-id/usb-Seeed_XIAO_nRF52840-if00:/dev/ttyACM0"`. Docker
+  resolvet de symlink bij containerstart; na een replug moet de container wel
+  opnieuw starten (`restart: unless-stopped` doet dat niet vanzelf — een
+  udev-rule die de container herstart is de nette oplossing als dat vaak gebeurt).
+- **Permissions**: de container draait als non-root user `app` (UID 1000), in-image lid van groep `dialout` (GID 20). Is het device op jouw host van een andere groep, kijk dan naar de 4e kolom van `ls -l /dev/ttyACM0`, zoek de GID op met `getent group <naam>` en zet die bij `group_add:` in de compose. Dat is veiliger dan `privileged: true`.
+- **Healthcheck**: de image heeft een ingebouwde `HEALTHCHECK` op `/healthz` (unauthenticated, raakt de DB niet). In Portainer zie je de container daardoor als *healthy* / *unhealthy* in plaats van alleen *running*.
+- **Persistente data**: het `/data`-volume. In de Portainer-stack is dat een named volume `meshcore-data`; bij `docker compose down -v` (of het weggooien van het volume) ben je je DB kwijt. Backup:
+  ```bash
+  docker run --rm -v meshcore-data:/data -v "$PWD:/backup" alpine \
+    cp /data/meshcore.db /backup/meshcore.db.bak
+  ```
+- **Updates**: lokaal `docker compose up -d --build`; op Portainer *Pull and redeploy* (zie hieronder). Schema-migraties draaien automatisch bij startup.
 
 ### CLI-toegang vanuit een container
 
@@ -172,6 +195,85 @@ Voor read-only inspectie van wat de gateway doet (incl. `MESHCORE_DEBUG=1` event
 ```bash
 docker compose logs -f gateway
 ```
+
+---
+
+## Deploy via GitHub Actions → GHCR → Portainer
+
+De productie-route is: push naar `main` → GitHub Actions draait de checks en
+bouwt het image → image komt op GHCR → Portainer pullt 'm.
+
+### 1. GitHub Actions
+
+`.github/workflows/ci.yml` heeft twee jobs:
+
+| Job | Wanneer | Wat |
+|---|---|---|
+| `checks` | elke push + PR | Python `ast.parse` van de 4 modules · `node --check` per SPA-JS-file · Jinja2 render-smoke van `index.html` · `docker compose config` op beide compose-bestanden · check dat `APP_VERSION` ook in `HANDOFF.md` staat |
+| `build` | na groene checks | Bouwt de image (`linux/amd64`) en pusht naar GHCR — alleen bij push naar `main` of een `v*`-tag. Een PR bouwt wél, pusht níét. |
+
+Er zijn **geen secrets nodig**: de workflow logt in op GHCR met de
+automatische `GITHUB_TOKEN` (`permissions: packages: write`).
+
+Tags die gepusht worden vanaf `main`:
+
+- `latest` — laatste main-build
+- `1.1.049` — de `APP_VERSION` uit `web.py`
+- `sha-<short>` — exacte commit
+
+Push je een git-tag `v1.1.049`, dan komt die tagnaam er ook bij.
+
+### 2. GHCR-package publiek maken (eenmalig)
+
+De eerste build maakt het package aan als **private**. Eenmalig omzetten:
+
+GitHub → je profiel → **Packages** → `meshcore-webclient` → *Package settings*
+→ **Change visibility** → *Public*. Daarna hoeft Portainer niet in te loggen.
+
+Wil je 'm liever privé houden, maak dan een PAT (classic) met scope
+`read:packages` en voeg in Portainer een registry toe: *Registries* →
+*Custom registry* → URL `ghcr.io`, username = je GitHub-naam, password = de PAT.
+
+De `org.opencontainers.image.source`-label in de Dockerfile koppelt het package
+automatisch aan de repo, zodat de repo-README op de package-pagina verschijnt.
+
+### 3. Portainer-stack
+
+Portainer → **Stacks** → *Add stack* → naam `meshcore-gateway` → *Web editor* →
+inhoud van `portainer-stack.yml` plakken → **Deploy**.
+
+Twee dingen nog vóór deploy controleren op de host:
+
+```bash
+ls -l /dev/ttyACM*          # klopt het device-pad?
+getent group dialout        # klopt GID 20?
+```
+
+Pin in productie liever een vaste versie in plaats van `latest`. Dat kan via
+de env-var in de stack:
+
+```
+MESHCORE_TAG=1.1.049
+```
+
+(In Portainer: *Environment variables* onderaan het stack-formulier.)
+
+### 4. Updaten
+
+1. **Backup eerst** — de DB zit in het named volume:
+   ```bash
+   docker run --rm -v meshcore-data:/data -v "$PWD:/backup" alpine \
+     cp /data/meshcore.db /backup/meshcore.db.bak
+   ```
+2. Portainer → Stacks → `meshcore-gateway` → **Pull and redeploy** (of bump
+   `MESHCORE_TAG` naar de nieuwe versie en *Update the stack*).
+3. Schema-migraties draaien automatisch bij startup — check de logs.
+4. Hard refresh in de browser is niet nodig: de cache-buster `?v={{VERSION}}`
+   op CSS/JS invalideert zichzelf bij elke versie-bump.
+
+**Rollback**: zet `MESHCORE_TAG` terug op de vorige versie-tag en redeploy.
+Werkt alleen als je DB-schema niet vooruit is gemigreerd — migraties zijn
+forward-only, dus bij een schema-wijziging heb je de backup nodig.
 
 ---
 

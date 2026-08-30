@@ -1,0 +1,70 @@
+# MeshCore Gateway — Portainer stack (pull-only, geen build)
+#
+# Gebruik in Portainer:  Stacks → Add stack → Repository (of Web editor) →
+# deze compose plakken → Deploy. Portainer kan niet bouwen vanuit een
+# repository-stack op alle setups; dit bestand pullt daarom een kant-en-klaar
+# image dat GitHub Actions heeft gepusht.
+#
+# Image:  ghcr.io/1nvolver/meshcore-webclient
+# Tags:   latest (= laatste main-build) | 1.1.049 (vaste versie) | sha-abc1234
+#
+# Pin bij voorkeur een vaste versie-tag in productie, dan bepaal jij wanneer
+# je update in plaats van "wat er toevallig als latest staat".
+
+services:
+  gateway:
+    image: ghcr.io/1nvolver/meshcore-webclient:${MESHCORE_TAG:-latest}
+    container_name: meshcore-gateway
+    restart: unless-stopped
+
+    ports:
+      - "8080:8080"          # Web UI — host:container
+
+    devices:
+      # De USB companion-radio. Controleer op de host met:
+      #   ls -l /dev/ttyACM* /dev/ttyUSB*
+      #   ls -l /dev/serial/by-id/          (stabielere naam, zie README)
+      # Links = pad op de host, rechts = pad binnen de container.
+      - "/dev/ttyACM0:/dev/ttyACM0"
+
+    # De container draait als niet-root user (uid 1000) die in-image lid is van
+    # groep 20 (dialout). Is /dev/ttyACM0 op jóuw host van een andere groep
+    # (check de 4e kolom van 'ls -l /dev/ttyACM0' en zoek de GID op met
+    # 'getent group <naam>'), zet die GID dan hier bij — dat is de nette manier
+    # en veiliger dan privileged: true.
+    group_add:
+      - "20"                 # dialout op Debian/Ubuntu/Raspberry Pi OS
+
+    volumes:
+      - meshcore-data:/data  # SQLite-DB komt op /data/meshcore.db
+
+    environment:
+      # Pad binnen de container — moet matchen met de rechterkant van 'devices'.
+      MESHCORE_PORT: /dev/ttyACM0
+      # MESHCORE_BAUD: "115200"
+      # MESHCORE_WEB_PORT: "8080"
+      # MESHCORE_DEBUG: "1"
+      # Watchdog: na N mislukte checks exit met code 75 → restart-policy pakt 'm op.
+      # MESHCORE_WATCHDOG_HARD_FAIL: "5"
+      TZ: Europe/Amsterdam
+
+    healthcheck:
+      # Staat ook in de image; hier expliciet zodat je 'm per-stack kunt tunen.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 25s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  meshcore-data:
+    # Named volume: overleeft 'stack redeploy' en image-updates. Backup vóór een
+    # update: docker run --rm -v meshcore-data:/data -v $PWD:/backup alpine \
+    #   cp /data/meshcore.db /backup/meshcore.db.bak
+    name: meshcore-data

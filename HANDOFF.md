@@ -1,6 +1,6 @@
 # Handoff — MeshCore Gateway Web Client
 
-Stand: versie 1.1.048. Deze notitie is bedoeld om het project in een nieuwe
+Stand: versie 1.1.049. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode-bestanden gaan apart mee.
 
 > **Voor per-versie wijzigingen / changelog** zie `CHANGELOG.md`. Dit bestand
@@ -41,7 +41,11 @@ SQLAlchemy async + aiosqlite, uvicorn. Geen build-step; één venv.
 | `static/vendor/jsQR.min.js` | cozmo, Apache-2.0, ~257KB. QR-decoder voor camera-scan en foto-upload. |
 | `bot.py` | DB-driven bot-framework. Hooks op de dispatch, leest bots uit DB (TTL-cache 30s), variable-resolver `{TIME}/{UPRADIO}/{UPNODE}/{HELP}`. |
 | `db.py` | SQLAlchemy async, alle modellen + helpers. `SCHEMA_VERSION` + auto-migraties in `init_db()`. |
-| `Dockerfile`, `docker-compose.yml`, `.dockerignore` | Container (python:3.12-slim, non-root, USB-device passthrough, `/data`-volume). |
+| `Dockerfile` | Container-image (python:3.12-slim, tini, non-root `app` uid/gid 1000 + groep `dialout`, `/data`-volume, `HEALTHCHECK` op `/healthz`, OCI-labels). |
+| `docker-compose.yml` | **Lokaal** bouwen/testen (`build: .`). |
+| `portainer-stack.yml` | **Productie** — pullt `ghcr.io/1nvolver/meshcore-webclient:${MESHCORE_TAG:-latest}`, named volume `meshcore-data`, `group_add: ["20"]` voor serial-toegang. |
+| `.github/workflows/ci.yml` | CI: job `checks` (py-ast, `node --check`, jinja render-smoke, `compose config`, APP_VERSION↔HANDOFF-sync) + job `build` (buildx → GHCR, `linux/amd64`, alleen push vanaf `main`/`v*`-tag). |
+| `.dockerignore` | Houdt DB, `.git`, docs en venv uit de build-context. |
 | `meshcore-gateway.service.example` | systemd-unit template (native installatie). |
 | `README.md` | Volledige gebruikershandleiding (setup, container, systemd, caveats, update-procedure). |
 | `CHANGELOG.md` | Per-versie wijzigingen (chronologisch, append-only). Voorheen `HANDOFF new.md`. |
@@ -84,6 +88,13 @@ SQLAlchemy async + aiosqlite, uvicorn. Geen build-step; één venv.
 - **Static-asset cache-buster**: `?v={{VERSION}}` op `<link>` + `<script>` URLs
   in `templates/index.html`. Elke `APP_VERSION` bump invalideert browser-cache —
   geen hard-refresh meer nodig na een update.
+- **CI/CD is pull-based** (v1.1.049): GitHub Actions bouwt en pusht naar GHCR,
+  Portainer pullt. Bewust géén build-on-host: de Portainer-host hoeft geen
+  build-context, geen git en geen buildkit te hebben, en het image dat draait
+  is bit-voor-bit hetzelfde als wat CI heeft getest. Auth met de automatische
+  `GITHUB_TOKEN` — geen secrets in de repo. Alleen `linux/amd64` gebouwd
+  (target-host is x86); arm64 erbij is één regel in `platforms:` maar kost
+  QEMU-buildtijd.
 - **Threading is hybride**: expliciet via `Message.parent_id` (DB-persisted, set
   door Reply-knop) + heuristisch via `@[X]`-mention-detectie client-side
   (binnen 30 min, niet persisted). Render bouwt boom uit beide signalen.
@@ -283,6 +294,26 @@ vereist op enkele plekken conversie.
   zit standaard in `dist/jsQR.js` als webpack-bundled output. Op snelle LAN's
   prima, op slow mobile data eerste page-load ~+0.3s. Lazy-load is denkbaar
   maar zou de `<script src>`-volgorde-aanname doorbreken — laat zo.
+- **Container + USB**: de app draait als uid 1000 met supplementaire groep 20
+  (`dialout`). Op een host waar `/dev/ttyACM0` van een andere groep is, faalt
+  het openen van de poort — fix via `group_add` in de compose, niet via
+  `privileged: true`. `/dev/ttyACM0` is bovendien niet stabiel bij replug of
+  meerdere USB-serieel-apparaten; `/dev/serial/by-id/...` links in `devices:`
+  is robuuster, maar Docker resolvet die symlink alleen bij containerstart —
+  na een replug moet de container herstarten.
+- **`useradd -g 1000` was een latente build-breker** in de oude Dockerfile:
+  groep 1000 bestaat niet in `python:3.12-slim`, dus de build faalde zodra
+  iemand 'm daadwerkelijk zou bouwen. Sinds v1.1.049 wordt de groep expliciet
+  aangemaakt. Was nooit opgevallen omdat er lokaal geen build gedraaid is.
+- **De CI kan de app niet smoke-testen**: geen USB-device op een runner. De
+  checks zijn syntax + render + compose-validatie, niet meer dan dat. Een
+  groene build betekent "het image bouwt en de bestanden parsen", niet
+  "de gateway praat met de radio".
+- **`latest` op GHCR is een bewegend doel**: pin in Portainer een versie-tag
+  (`MESHCORE_TAG=1.1.049`) als je wilt bepalen wanneer je update.
+- **Rollback is beperkt door forward-only migraties**: terug naar een oudere
+  image-tag werkt alleen als het DB-schema niet vooruit is gemigreerd. Vandaar
+  de backup-stap in de update-procedure.
 - Geen automated tests.
 
 ---
@@ -319,6 +350,12 @@ zonder dat user hard-refresh moet doen.
 `LOGIN_HTML` / `SETUP_HTML` zijn nog inline Python-strings (klein, `{err}` via
 `.replace()`). Sinds v1.1.031 hebben ze ook viewport meta + 16px input-font
 voor mobile-bruikbaarheid.
+
+Sinds v1.1.049 draait dezelfde lint-loop ook in CI (`.github/workflows/ci.yml`,
+job `checks`), plus een `docker compose config`-validatie en een check dat het
+nieuwe `APP_VERSION` ook echt in `HANDOFF.md` staat. Vergeet je die sync, dan
+faalt de build — bewust, want de versie-string is de enige koppeling tussen
+image-tag, cache-buster en docs.
 
 **Update-procedure op een productie-Pi:** zie `README.md` sectie "Updates /
 nieuwe versie deployen" — kort: DB-backup (`cp meshcore.db meshcore.db.bak`)

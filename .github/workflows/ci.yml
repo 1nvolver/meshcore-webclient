@@ -1,0 +1,135 @@
+name: CI
+
+# Checks draaien op elke push en PR. Pushen naar GHCR gebeurt alleen vanaf
+# main en vanaf v*-tags — een PR bouwt het image wel (om build-fouten te
+# vangen) maar pusht niet.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  checks:
+    name: Lint & syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Python-syntax (ast.parse van alle modules)
+        run: |
+          python -c "import ast; [ast.parse(open(f, encoding='utf-8').read(), f) for f in ('gateway.py','db.py','web.py','bot.py')]"
+
+      - name: JS-syntax (node --check per SPA-module)
+        run: |
+          shopt -s nullglob
+          for f in static/js/*.js; do
+            echo "check $f"
+            node --check "$f"
+          done
+
+      - name: Jinja2 render-smoke van index.html
+        run: |
+          pip install --quiet 'jinja2>=3.1'
+          python - <<'PY'
+          from jinja2 import Environment, FileSystemLoader
+          env = Environment(loader=FileSystemLoader('templates'))
+          html = env.get_template('index.html').render(VERSION='ci', request=None)
+          assert len(html) > 1000, 'render leverde verdacht weinig HTML op'
+          print(f'render OK — {len(html)} bytes')
+          PY
+
+      - name: Compose-bestanden valideren
+        run: |
+          docker compose -f docker-compose.yml config -q
+          docker compose -f portainer-stack.yml config -q
+
+      - name: APP_VERSION consistent met HANDOFF.md
+        run: |
+          APP=$(grep -oP '^APP_VERSION\s*=\s*"\K[^"]+' web.py)
+          echo "APP_VERSION = $APP"
+          grep -q "$APP" HANDOFF.md || {
+            echo "::error::APP_VERSION $APP komt niet voor in HANDOFF.md — vergeten te syncen?"
+            exit 1
+          }
+
+  build:
+    name: Build & push naar GHCR
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: APP_VERSION uitlezen
+        id: ver
+        run: |
+          echo "version=$(grep -oP '^APP_VERSION\s*=\s*"\K[^"]+' web.py)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Inloggen op GHCR
+        # Alleen bij push naar main/tag — PR's van forks hebben geen write-token.
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags & labels bepalen
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # metadata-action lowercase't de image-naam zelf — owner met
+          # hoofdletters is dus geen probleem.
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=${{ steps.ver.outputs.version }},enable={{is_default_branch}}
+            type=ref,event=tag
+            type=ref,event=pr
+            type=sha,format=short
+          labels: |
+            org.opencontainers.image.version=${{ steps.ver.outputs.version }}
+
+      - name: Bouwen en pushen
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Samenvatting
+        if: github.event_name != 'pull_request'
+        run: |
+          {
+            echo "### Image gepusht"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
