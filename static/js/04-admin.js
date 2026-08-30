@@ -6,7 +6,6 @@ function renderAdmin(){
     case 'node':         return renderAdminNode();
     case 'prefs':        return renderAdminPrefs();
     case 'channels':     return renderAdminChannels();
-    case 'contacts':     return renderAdminContacts();
     case 'bots':         return renderAdminBots();
     case 'housekeeping': return renderAdminHousekeeping();
     case 'users':        return renderAdminUsers();
@@ -100,8 +99,73 @@ function renderAdminNode(){
       <div class="row"><label>Naam</label><input id="n-name" type="text"><button onclick="setName()">Wijzigen</button></div>
       <div class="row"><label>Locatie</label><input id="n-lat" type="number" step="0.000001" placeholder="lat" style="flex:0;width:140px"><input id="n-lon" type="number" step="0.000001" placeholder="lon" style="flex:0;width:140px"><button onclick="setCoords()">Set</button><button onclick="clearCoords()" class="small">clear</button></div>
       <div class="row" style="margin-top:14px"><button onclick="rebootNode()" class="danger">Reboot companion</button><span class="note">~10s offline</span></div>
+    </section>
+    <section><h2>Default flood-scope</h2>
+      <div class="note" style="margin-bottom:8px">
+        Companion-wide default. Wordt actief op kanalen die <b>zelf geen scope</b>
+        hebben (zie Channels → scope). Een kanaal-eigen scope <b>overrulet</b> deze.
+        Leeg = geen default (volle flood).
+      </div>
+      <div class="row">
+        <label>Scope</label>
+        <input id="n-default-scope" type="text" maxlength="31" placeholder="bv. #europa  (leeg = uit)" autocomplete="off">
+        <button onclick="setDefaultScope()">Wijzigen</button>
+        <button onclick="clearDefaultScope()" class="small">clear</button>
+      </div>
+      <div id="n-default-scope-status" class="note" style="margin-top:6px;color:#888">…ophalen…</div>
     </section>`;
   $('n-name').value=s.node?.name||''; $('n-lat').value=s.radio?.lat||''; $('n-lon').value=s.radio?.lon||'';
+  loadDefaultScope();
+}
+
+async function loadDefaultScope(){
+  const inp = $('n-default-scope');
+  const note = $('n-default-scope-status');
+  if (!inp || !note) return;
+  let r;
+  try {
+    r = await api('/admin/radio/default-scope');
+  } catch(e) {
+    note.textContent = 'Lezen mislukt — companion niet bereikbaar?';
+    note.style.color = '#c33';
+    return;
+  }
+  if (r.supported === false) {
+    inp.value = '';
+    inp.disabled = true;
+    note.textContent = r.message || 'Firmware/SDK ondersteunt dit niet.';
+    note.style.color = '#c33';
+    return;
+  }
+  inp.value = r.scope_name || '';
+  if (r.error) {
+    note.textContent = 'Cache: ' + (r.scope_name || '(geen)') + ' — ' + r.error;
+    note.style.color = '#c33';
+  } else if (r.scope_name) {
+    note.textContent = 'Actief op de companion: ' + r.scope_name;
+    note.style.color = '#666';
+  } else {
+    note.textContent = 'Geen default ingesteld.';
+    note.style.color = '#888';
+  }
+}
+
+async function setDefaultScope(){
+  const inp = $('n-default-scope');
+  if (!inp) return;
+  const v = (inp.value || '').trim();
+  try {
+    const r = await api('/admin/radio/default-scope',
+      {method:'POST', body:JSON.stringify({scope: v})});
+    toast(r.message || 'ok', 'ok');
+    loadDefaultScope();
+  } catch(e){}
+}
+
+async function clearDefaultScope(){
+  const inp = $('n-default-scope');
+  if (inp) inp.value = '';
+  setDefaultScope();
 }
 
 function renderAdminChannels(){
@@ -124,74 +188,188 @@ function renderAdminChannels(){
     const tr=document.createElement('tr');
     const scopeBtn = '<button class="small" onclick="editScope('+c.idx+')">scope</button>';
     const removeBtn = (c.idx===0?'':' <button class="small danger" onclick="removeChannel('+c.idx+')">remove</button>');
-    tr.innerHTML='<td>'+c.idx+'</td><td>'+(c.kind||'?')+'</td><td>'+escapeHTML(c.name||'')+'</td><td>'+escapeHTML(c.alias||'')+'</td><td>'+escapeHTML(c.scope||'—')+'</td><td>'+scopeBtn+removeBtn+'</td>';
+    tr.innerHTML='<td data-label="#">'+c.idx+'</td><td data-label="Type">'+(c.kind||'?')+'</td><td data-label="Naam">'+escapeHTML(c.name||'')+'</td><td data-label="Alias">'+escapeHTML(c.alias||'')+'</td><td data-label="Scope">'+escapeHTML(c.scope||'—')+'</td><td>'+scopeBtn+removeBtn+'</td>';
     tb.appendChild(tr);
   });
 }
 
-async function editScope(slot){
-  const cur = (STATE.channels.find(x=>x.idx===slot) || {}).scope || '';
-  const v = prompt('Scope voor slot '+slot+' (leeg = geen scope):', cur);
-  if (v === null) return;
+/* Channel scope-modal (v1.1.044) — vervangt eerdere prompt(). prompt() gaf
+   geen uitleg, geen voorbeelden, geen maxlength. Modal toont waarvoor scope
+   dient, voorbeelden, leeg-laat-gedrag en huidige waarde. */
+function editScope(slot){
+  const ch = STATE.channels.find(x => x.idx === slot) || {};
+  const cur = ch.scope || '';
+  const chName = ch.name || ('slot ' + slot);
+  const chKind = ch.kind || '?';
+  openModal('Flood-scope voor "' + chName + '"',
+    '<p>Optionele <b>flood-scope</b> die vóór elke send naar dit kanaal wordt ' +
+      'gezet via <code>set_flood_scope()</code>. Beperkt het bereik tot ontvangers ' +
+      'die op deze scope luisteren. Leeg = geen scope (standaard flood, overal).</p>' +
+    '<div class="kv" style="margin:8px 0">' +
+      '<div><span class="k">slot:</span>' + slot + '</div>' +
+      '<div><span class="k">kanaal:</span>' + escapeHTML(chName) + '</div>' +
+      '<div><span class="k">type:</span>' + escapeHTML(chKind) + '</div>' +
+      '<div><span class="k">huidig:</span>' + (cur ? '<code>' + escapeHTML(cur) + '</code>' : '<i>(geen)</i>') + '</div>' +
+    '</div>' +
+    '<div class="row" style="align-items:center;gap:8px;margin-top:10px">' +
+      '<label style="flex:0;min-width:90px">Scope</label>' +
+      '<input id="scope-input" type="text" maxlength="64" value="' + escapeHTML(cur) +
+        '" placeholder="bv. #europa  (leeg = uit)" autocomplete="off" ' +
+        'style="flex:1;font:inherit;padding:8px 10px;border:1px solid #ccc;border-radius:4px;min-height:40px;font-size:16px">' +
+    '</div>' +
+    '<div class="note" style="margin-top:8px">' +
+      '<b>Voorbeelden:</b> <code>#europa</code>, <code>#nl-noord</code>, <code>#regio-zuid</code>.<br>' +
+      'Conventie is een hashtag, maar elke tekenreeks van max 64 tekens werkt. Vrije tekst — geen validatie.' +
+    '</div>' +
+    '<div class="modal-actions">' +
+      '<button type="button" onclick="_scopeClear()">Wissen (uit)</button>' +
+      '<button type="button" class="primary" onclick="_scopeSave(' + slot + ')">Opslaan</button>' +
+    '</div>'
+  );
+  const input = document.getElementById('scope-input');
+  if (input) {
+    input.focus();
+    try { input.setSelectionRange(input.value.length, input.value.length); } catch(e) {}
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); _scopeSave(slot); }
+    });
+  }
+}
+
+function _scopeClear(){
+  const input = document.getElementById('scope-input');
+  if (input) { input.value = ''; input.focus(); }
+}
+
+async function _scopeSave(slot){
+  const input = document.getElementById('scope-input');
+  if (!input) return;
+  const v = (input.value || '').trim();
   try {
     const r = await api('/admin/channels/scope', {method:'POST', body:JSON.stringify({slot, scope: v})});
     toast(r.message || 'ok', 'ok');
+    closeModal();
     refreshAndRerender();
-  } catch(e){}
+  } catch(e){
+    // api() heeft al getoast — modal blijft open zodat user kan corrigeren.
+  }
 }
 
 function renderAdminHousekeeping(){
   const s = STATE.status || {db:{count:0}};
+  // Default: 28 dagen geleden als 'voor datum'.
+  const dflt = new Date(Date.now() - 28 * 86400 * 1000);
+  const dfltStr = dflt.toISOString().slice(0, 10);  // YYYY-MM-DD voor input[type=date]
   $('admin-view').innerHTML = `
     <section><h2>Housekeeping</h2>
       <div class="row"><label>DB-records</label><span id="db-count" class="kv">…</span></div>
       <div class="row" style="margin-top:10px"><label>Verwijder ouder dan</label><input id="hk-age" type="number" placeholder="aantal" style="width:90px"><select id="hk-unit"><option value="86400">dagen</option><option value="3600">uren</option><option value="60">minuten</option></select><button onclick="cleanOlder()" class="danger">Verwijder</button></div>
       <div class="row"><button onclick="cleanAll()" class="danger">Alles verwijderen</button><button onclick="vacuum()">VACUUM</button></div>
     </section>
-    <section><h2>Stale repeaters opruimen</h2>
-      <div class="note" style="margin-bottom:8px">Verwijdert repeaters en rooms van de companion-contactlijst die meer dan 4 weken geen advert hebben gestuurd. Favorieten worden nooit opgeruimd, ongeacht leeftijd.</div>
-      <div class="row"><button onclick="loadStaleRepeaters()">Toon kandidaten</button></div>
-      <div id="stale-rep-result" style="margin-top:10px"></div>
+    <section><h2>Stale companion-contacten opruimen</h2>
+      <div class="note" style="margin-bottom:8px">
+        Verwijdert contacten van de companion die sinds een gekozen datum geen advert
+        meer hebben gestuurd. Selecteer welke types meegenomen worden. Favorieten
+        (repeaters/rooms met ster) worden standaard overgeslagen.
+      </div>
+      <div class="row" style="align-items:center;flex-wrap:wrap;gap:12px">
+        <label>Sinds datum</label>
+        <input id="hk-stale-date" type="date" value="${dfltStr}" max="${(new Date()).toISOString().slice(0,10)}" style="flex:0;width:160px">
+        <span id="hk-stale-days-hint" class="note" style="margin-left:4px"></span>
+      </div>
+      <div class="row" style="align-items:center;flex-wrap:wrap;gap:14px">
+        <label>Types</label>
+        <label style="font-weight:normal"><input type="checkbox" id="hk-stale-t1"> clients</label>
+        <label style="font-weight:normal"><input type="checkbox" id="hk-stale-t2" checked> repeaters</label>
+        <label style="font-weight:normal"><input type="checkbox" id="hk-stale-t3" checked> rooms</label>
+      </div>
+      <div class="row" style="align-items:center;flex-wrap:wrap;gap:14px">
+        <label></label>
+        <label style="font-weight:normal"><input type="checkbox" id="hk-stale-skipfavs" checked> Favorieten overslaan</label>
+      </div>
+      <div class="row"><button onclick="loadStaleContacts()">Toon kandidaten</button></div>
+      <div id="stale-result" style="margin-top:10px"></div>
     </section>`;
   $('db-count').textContent = (s.db?.count ?? '?') + ' berichten';
+  // Live hint: "(X dagen geleden)"
+  const dateEl = $('hk-stale-date');
+  const hintEl = $('hk-stale-days-hint');
+  function updateHint(){
+    if (!dateEl.value) { hintEl.textContent = ''; return; }
+    const picked = new Date(dateEl.value + 'T00:00:00');
+    const days = Math.max(0, Math.round((Date.now() - picked.getTime()) / 86400000));
+    hintEl.textContent = '(' + days + ' dagen geleden)';
+  }
+  dateEl.addEventListener('input', updateHint);
+  updateHint();
 }
 
-async function loadStaleRepeaters(){
-  const el = $('stale-rep-result');
+function _hkStaleParams(){
+  const dateStr = $('hk-stale-date').value;
+  if (!dateStr) { toast('Datum is verplicht', 'err'); return null; }
+  const picked = new Date(dateStr + 'T00:00:00');
+  const days = Math.max(0, (Date.now() - picked.getTime()) / 86400000);
+  const types = [];
+  if ($('hk-stale-t1').checked) types.push(1);
+  if ($('hk-stale-t2').checked) types.push(2);
+  if ($('hk-stale-t3').checked) types.push(3);
+  if (!types.length) { toast('Selecteer minstens één type', 'err'); return null; }
+  return {
+    days: days,
+    types: types.join(','),
+    skip_favorites: $('hk-stale-skipfavs').checked ? '1' : '0',
+  };
+}
+
+async function loadStaleContacts(){
+  const el = $('stale-result');
+  const p = _hkStaleParams();
+  if (!p) return;
   el.innerHTML = '<div class="kv">…ophalen…</div>';
+  const qs = new URLSearchParams(p).toString();
   let data;
-  try { data = await api('/admin/repeaters/stale'); } catch(e) { return; }
+  try { data = await api('/admin/contacts/stale?' + qs); } catch(e) { return; }
   if (!data.count){
-    el.innerHTML = '<div class="kv" style="color:#888">Geen kandidaten — alles is recent gezien of staat als favoriet.</div>';
+    el.innerHTML = '<div class="kv" style="color:#888">Geen kandidaten — niets ouder dan deze datum binnen de geselecteerde types.</div>';
     return;
   }
   const rows = data.items.map(it => {
     const lastAdv = it.last_advert ? new Date(it.last_advert * 1000).toLocaleString() : '—';
     return '<tr>' +
-      '<td>' + escapeHTML(it.name) + '</td>' +
-      '<td>' + it.type_label + '</td>' +
-      '<td><code style="font-size:11px">' + it.pubkey_prefix + '</code></td>' +
-      '<td>' + escapeHTML(lastAdv) + '</td>' +
-      '<td>' + it.age_days + ' d</td>' +
+      '<td data-label="Naam">' + escapeHTML(it.name) + '</td>' +
+      '<td data-label="Type">' + it.type_label + '</td>' +
+      '<td data-label="Pubkey-prefix"><code style="font-size:11px">' + it.pubkey_prefix + '</code></td>' +
+      '<td data-label="Laatste advert">' + escapeHTML(lastAdv) + '</td>' +
+      '<td data-label="Leeftijd">' + it.age_days + ' d</td>' +
       '</tr>';
   }).join('');
+  const typesLbl = data.types.map(t => ({1:'clients',2:'repeaters',3:'rooms',4:'sensors'}[t] || t)).join(', ');
   el.innerHTML = `
-    <div class="kv" style="margin-bottom:6px">${data.count} kandidaten (drempel: ${data.age_days_threshold} dagen).</div>
+    <div class="kv" style="margin-bottom:6px">${data.count} kandidaten (${typesLbl}; ouder dan ${data.age_days_threshold.toFixed(1)} dagen).</div>
     <table style="width:100%">
       <thead><tr><th>Naam</th><th>Type</th><th>Pubkey-prefix</th><th>Laatste advert</th><th>Leeftijd</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
     <div class="row" style="margin-top:10px">
-      <button onclick="cleanupStaleRepeaters(${data.count})" class="danger">Verwijder ${data.count} contacten</button>
+      <button onclick="cleanupStaleContacts(${data.count})" class="danger">Verwijder ${data.count} contacten</button>
     </div>`;
 }
 
-async function cleanupStaleRepeaters(expected){
-  if (!confirm('Verwijder ' + expected + ' stale repeaters/rooms van de companion-contactlijst? Dit is niet ongedaan te maken.')) return;
+async function cleanupStaleContacts(expected){
+  const p = _hkStaleParams();
+  if (!p) return;
+  if (!confirm('Verwijder ' + expected + ' contacten van de companion-contactlijst?\n\nDit is niet ongedaan te maken; deze contacten kunnen later weer binnenkomen via een nieuwe advert.')) return;
   let res;
-  try { res = await api('/admin/repeaters/cleanup', {method:'POST', body:'{}'}); } catch(e) { return; }
-  toast(res.message || 'klaar');
-  loadStaleRepeaters();
+  try {
+    res = await api('/admin/contacts/cleanup', {method:'POST', body:JSON.stringify({
+      days: parseFloat(p.days),
+      types: p.types,
+      skip_favorites: p.skip_favorites === '1',
+    })});
+  } catch(e) { return; }
+  toast(res.message || 'klaar', 'ok');
+  loadStaleContacts();
+  refresh();
 }
 
 function _formatPeriodHours(h){
@@ -289,47 +467,6 @@ async function savePrefSingle(key, value){
   } catch(e){}
 }
 
-async function renderAdminContacts(){
-  const el = $('admin-view');
-  el.innerHTML = '<section><h2>Contacten</h2><div class="kv">…laden…</div></section>';
-  let cs;
-  try { cs = await api('/contacts'); } catch(e) { return; }
-
-  const typeLabel = t => (t === 1 ? 'client' : t === 2 ? 'repeater' : t === 3 ? 'room' : '?');
-  const rows = cs.map(c => {
-    const last = c.last_advert ? new Date(c.last_advert*1000).toLocaleString() : '—';
-    const acts = '<button class="small danger" onclick="removeContact(\''+c.pubkey+'\',\''+escapeHTML(c.name||'').replace(/\\/g,"\\\\").replace(/'/g,"\\'")+'\')">remove</button>';
-    return '<tr>' +
-      '<td>' + escapeHTML(c.name || '?') + '</td>' +
-      '<td>' + typeLabel(c.type) + '</td>' +
-      '<td><code style="font-size:11px">' + c.pubkey_prefix + '</code></td>' +
-      '<td>' + escapeHTML(last) + '</td>' +
-      '<td>' + acts + '</td>' +
-    '</tr>';
-  }).join('');
-
-  el.innerHTML = `
-    <section><h2>Bekende contacten (${cs.length})</h2>
-      <table style="width:100%">
-        <thead><tr>
-          <th>Naam</th><th>Type</th><th>Pubkey</th><th>Laatste advert</th><th></th>
-        </tr></thead>
-        <tbody>${rows || '<tr><td colspan="5" style="color:#888">geen contacten</td></tr>'}</tbody>
-      </table>
-    </section>
-  `;
-}
-
-async function removeContact(pubkey, name){
-  if (!confirm('Contact "'+name+'" verwijderen uit de companion?')) return;
-  try {
-    const r = await api('/contacts/remove', {method:'POST', body:JSON.stringify({key: pubkey})});
-    toast(r.message || 'ok', 'ok');
-    refresh();
-    renderAdminContacts();
-  } catch(e){}
-}
-
 async function renderAdminBots(){
   const el = $('admin-view');
   el.innerHTML = '<section><h2>Bots</h2><div class="kv">…laden…</div></section>';
@@ -357,11 +494,11 @@ async function renderAdminBots(){
     const toggleClass = b.enabled ? 'toggle-on' : 'toggle-off';
     const toggleTitle = b.enabled ? 'uit zetten' : 'aan zetten';
     return '<tr>' +
-      '<td>' + escapeHTML(b.name) + '</td>' +
-      '<td>' + escapeHTML(chanLbl) + '</td>' +
-      '<td><code style="font-size:13px">?'+escapeHTML(b.keyword)+'</code></td>' +
-      '<td>' + en + '</td>' +
-      '<td style="font-family:ui-monospace,monospace;font-size:12px;word-break:break-word">' +
+      '<td data-label="Naam">' + escapeHTML(b.name) + '</td>' +
+      '<td data-label="Kanaal">' + escapeHTML(chanLbl) + '</td>' +
+      '<td data-label="Keyword"><code style="font-size:13px">?'+escapeHTML(b.keyword)+'</code></td>' +
+      '<td data-label="Status">' + en + '</td>' +
+      '<td data-label="Reply" style="font-family:ui-monospace,monospace;font-size:12px;word-break:break-word">' +
         escapeHTML(b.reply || '') + '</td>' +
       '<td style="white-space:nowrap">' +
         '<button class="btn-icon" title="bewerken" onclick="botEditPrompt('+b.id+')">'+ICON_PENCIL+'</button>' +
@@ -492,7 +629,7 @@ async function loadUsers(){
       const btns = [];
       if (u.has_password) btns.push('<button class="small" onclick="resetUserPw(\''+u.username+'\')">reset pw</button>');
       btns.push('<button class="small danger" onclick="deleteUser(\''+u.username+'\')">verwijder</button>');
-      tr.innerHTML = '<td>'+escapeHTML(u.username)+'</td><td>'+u.role+'</td><td>'+pwState+'</td><td>'+escapeHTML(last)+'</td><td>'+btns.join(' ')+'</td>';
+      tr.innerHTML = '<td data-label="Naam">'+escapeHTML(u.username)+'</td><td data-label="Rol">'+u.role+'</td><td data-label="Wachtwoord">'+pwState+'</td><td data-label="Laatste login">'+escapeHTML(last)+'</td><td>'+btns.join(' ')+'</td>';
       tb.appendChild(tr);
     });
   } catch(e){}

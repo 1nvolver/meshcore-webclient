@@ -14,9 +14,7 @@
     <svg viewBox="0 0 24 24"><path d="M12 12c2.7 0 5-2.3 5-5s-2.3-5-5-5-5 2.3-5 5 2.3 5 5 5zm0 2c-3.3 0-10 1.7-10 5v3h20v-3c0-3.3-6.7-5-10-5z"/></svg>
     <div class="menu" id="user-menu" onclick="event.stopPropagation()">
       <a id="menu-username" style="font-weight:600;color:#888;cursor:default" onclick="event.stopPropagation()">…</a>
-      <a onclick="changeCallsignPrompt()" id="menu-callsign">Callsign instellen…</a>
-      <a onclick="toggleThreadingPref()" id="menu-threading">Threading-indicators: …</a>
-      <a onclick="changePasswordPrompt()">Wachtwoord wijzigen</a>
+      <a onclick="showProfileModal()">Mijn profiel…</a>
       <a onclick="location.href='/logout'">Logout</a>
       <a id="menu-quit" class="danger" onclick="quitApp()" style="display:none">Quit (gateway stoppen)</a>
     </div>
@@ -39,11 +37,20 @@
         <ul id="tree-channels"></ul>
         <div class="tree-add" onclick="promptAddHashtag()">+ hashtag</div>
       </div>
+      <div class="tree-group" id="grp-private">
+        <div class="tree-group-h" onclick="toggleGroup('grp-private')">Privé</div>
+        <ul id="tree-private">
+          <li onclick="selectPrivChansManager()" id="li-priv-mgr"
+              style="font-style:italic;color:#888;border-bottom:1px solid #eee;margin-bottom:2px;display:none">
+            <span class="label">Beheren…</span>
+          </li>
+        </ul>
+      </div>
       <div class="tree-group" id="grp-dm">
         <div class="tree-group-h" onclick="toggleGroup('grp-dm')">DM</div>
         <ul id="tree-dms">
           <li onclick="selectContactsManager()" id="li-contacts-mgr"
-              style="font-style:italic;color:#888;border-bottom:1px solid #eee;margin-bottom:2px">
+              style="font-style:italic;color:#888">
             <span class="label">Contactpersonen</span>
           </li>
         </ul>
@@ -61,7 +68,6 @@
           <li onclick="selectAdminView('node')"         data-sub="node">Node</li>
           <li onclick="selectAdminView('prefs')"        data-sub="prefs">Voorkeuren</li>
           <li onclick="selectAdminView('channels')"     data-sub="channels">Channels</li>
-          <li onclick="selectAdminView('contacts')"     data-sub="contacts">Contacten</li>
           <li onclick="selectAdminView('repeaters')"    data-sub="repeaters">Repeaters</li>
           <li onclick="selectAdminView('bots')"         data-sub="bots">Bots</li>
           <li onclick="selectAdminView('housekeeping')" data-sub="housekeeping">Housekeeping</li>
@@ -104,6 +110,8 @@
       <div id="reports-view" class="admin-content" style="display:none"></div>
       <!-- Contacten-beheer view (per-user) -->
       <div id="contacts-view" class="admin-content" style="display:none"></div>
+      <!-- Privé-kanalen beheer view (admin-only) -->
+      <div id="privchans-view" class="admin-content" style="display:none"></div>
     </div>
   </div>
 
@@ -122,6 +130,13 @@
 <!-- Socket.IO MOET vóór onze JS — anders is io() undefined wanneer chat.js geladen wordt. -->
 <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 
+<!-- Vendor-libs voor QR (lokaal in static/vendor/, geen externe afhankelijkheid).
+     qrcode-generator: ~21KB, MIT — QR-genereren voor 'Mijn QR' modal.
+     jsQR: ~257KB, Apache — QR-decoden uit camera-stream of geüploade afbeelding.
+     Geen cache-buster: third-party content verandert niet tussen onze versies. -->
+<script src="/static/vendor/qrcode-generator.min.js"></script>
+<script src="/static/vendor/jsQR.min.js"></script>
+
 <!-- App-modules: plain scripts, geladen in volgorde. Elke file definieert top-level
      functies die globals worden; bootstrap.js draait als laatste en kickt de UI op gang.
      Reden voor plain scripts (geen ES modules): ~80 inline onclick="..."-handlers in
@@ -132,5 +147,6 @@
 <script src="/static/js/04-admin.js?v={{VERSION}}"></script>
 <script src="/static/js/05-reports.js?v={{VERSION}}"></script>
 <script src="/static/js/06-detail.js?v={{VERSION}}"></script>
+<script src="/static/js/08-qr.js?v={{VERSION}}"></script>
 <script src="/static/js/07-bootstrap.js?v={{VERSION}}"></script>
 </body></html>

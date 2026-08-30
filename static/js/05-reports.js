@@ -67,7 +67,7 @@ async function renderReportOverview(){
   const chanRows = (data.top_channels || []).map(c => {
     const dbc = STATE.channels.find(x => x.idx === c.channel_idx);
     const naam = dbc ? (dbc.alias || dbc.name || ('CH'+c.channel_idx)) : ('CH'+c.channel_idx);
-    return '<tr><td>'+escapeHTML(naam)+'</td><td style="text-align:right">'+c.count+'</td></tr>';
+    return '<tr><td data-label="Kanaal">'+escapeHTML(naam)+'</td><td data-label="Aantal" style="text-align:right">'+c.count+'</td></tr>';
   }).join('');
 
   // ----- Ack-rate -----
@@ -199,14 +199,14 @@ function renderRepeaterRows(){
     const escName = (r.name || '?').replace(/"/g,'&quot;').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
     return '<tr' + rowStyle + 'onclick="selectRepeater(\''+r.pubkey+'\',\''+escName+'\',\''+r.type_label+'\')">' +
       '<td style="text-align:center" onclick="event.stopPropagation()">' + star + '</td>' +
-      '<td>' + escapeHTML(r.name || '?') + '</td>' +
-      '<td>' + r.type_label + '</td>' +
-      '<td>' + hashCell + '</td>' +
-      '<td><code style="font-size:11px">' + r.pubkey_prefix + '</code></td>' +
-      '<td>' + escapeHTML(lastAdv) + '</td>' +
-      '<td>' + escapeHTML(loc) + '</td>' +
-      '<td>' + opl + '</td>' +
-      '<td>' + pingCell + '</td>' +
+      '<td data-label="Naam">' + escapeHTML(r.name || '?') + '</td>' +
+      '<td data-label="Type">' + r.type_label + '</td>' +
+      '<td data-label="Hash">' + hashCell + '</td>' +
+      '<td data-label="Pubkey-prefix"><code style="font-size:11px">' + r.pubkey_prefix + '</code></td>' +
+      '<td data-label="Laatste advert">' + escapeHTML(lastAdv) + '</td>' +
+      '<td data-label="Locatie">' + escapeHTML(loc) + '</td>' +
+      '<td data-label="Path">' + opl + '</td>' +
+      '<td data-label="Ping">' + pingCell + '</td>' +
       '</tr>';
   }).join('');
   const empty = q
@@ -243,7 +243,9 @@ async function pingRepeater(pubkey){
 function selectRepeater(pubkey, name, typeLabel){
   STATE.selectedRepeater = {pubkey: pubkey, name: name, type_label: typeLabel};
   // Reset manage-state per nieuwe selectie
-  STATE.repeaterMgmt = {logged_in: false, cli_history: [], last_status: null};
+  STATE.repeaterMgmt = {logged_in: false, cli_history: [], last_status: null,
+                        last_activity_ms: 0, ttl_secs: 120};
+  stopRepeaterCountdown();
   renderRepeaterRows();   // herteken voor de selectie-highlight
   renderDetail();
   openMobileDetail();     // detail-overlay op tablet/mobile
@@ -258,7 +260,92 @@ async function refreshRepeaterSession(){
     s = await api('/admin/repeaters/session?pubkey=' + encodeURIComponent(STATE.selectedRepeater.pubkey));
   } catch(e) { return; }
   STATE.repeaterMgmt.logged_in = !!s.logged_in;
+  if (typeof s.ttl_secs === 'number') STATE.repeaterMgmt.ttl_secs = s.ttl_secs;
+  if (typeof s.last_activity === 'number') {
+    STATE.repeaterMgmt.last_activity_ms = s.last_activity * 1000;
+  } else if (s.logged_in) {
+    // Geen server-tijd ontvangen maar wel ingelogd → gebruik nu als referentie
+    STATE.repeaterMgmt.last_activity_ms = Date.now();
+  }
   renderDetail();
+  if (STATE.repeaterMgmt.logged_in) startRepeaterCountdown();
+  else                              stopRepeaterCountdown();
+}
+
+/* ============== Sessie-countdown (v1.1.046) ==============
+   Client-side TTL-display. Bron-van-waarheid is server-side _REPEATER_SESSIONS
+   (zie web.py): elke succesvolle cmd refresht last_activity. Wij kennen via
+   GET /session de laatste last_activity + ttl_secs. UI updaten via textContent
+   ipv renderDetail() om uncontrolled inputs (wachtwoord, CLI) niet te wissen
+   — zelfde principe als de v1.1.044-fix.
+
+   Caveat: countdown is een client-zijde HINT. De firmware-zijde TTL is
+   onbekend en kan korter zijn (de UI vangt 'not_logged_in' op en valt
+   terug op login). De expliciete "Verleng sessie"-knop stuurt een echte
+   CLI (clock) zodat firmware-side TTL óók wordt geraakt. */
+let _repeaterCountdownTimer = null;
+
+function startRepeaterCountdown(){
+  stopRepeaterCountdown();
+  _tickRepeaterCountdown();  // direct render zonder 1s te wachten
+  _repeaterCountdownTimer = setInterval(_tickRepeaterCountdown, 1000);
+}
+
+function stopRepeaterCountdown(){
+  if (_repeaterCountdownTimer) {
+    clearInterval(_repeaterCountdownTimer);
+    _repeaterCountdownTimer = null;
+  }
+}
+
+function _tickRepeaterCountdown(){
+  const mgmt = STATE.repeaterMgmt || {};
+  // Self-cleanup: als de selectie of login weg is, stop het interval.
+  if (!STATE.selectedRepeater || !mgmt.logged_in) {
+    stopRepeaterCountdown();
+    return;
+  }
+  const el = $('rep-mgmt-countdown');
+  if (!el) return;  // paneel niet zichtbaar (bv. user op andere view) — timer
+                    // blijft draaien zodat zodra paneel weer in DOM komt, 't
+                    // ticket weer werkt. Stop bij echte deselectie hierboven.
+  const ttl = (mgmt.ttl_secs || 120) * 1000;
+  const since = Date.now() - (mgmt.last_activity_ms || 0);
+  const remaining_ms = ttl - since;
+  if (remaining_ms <= 0) {
+    // TTL op — UI naar logout-state. Eén renderDetail om login-form terug
+    // te zetten. Geen toast spam — user ziet 't aan de UI.
+    mgmt.logged_in = false;
+    stopRepeaterCountdown();
+    renderDetail();
+    toast('repeater-sessie verlopen', 'err');
+    return;
+  }
+  const s = Math.max(0, Math.ceil(remaining_ms / 1000));
+  const mm = Math.floor(s / 60);
+  const ss = s % 60;
+  el.textContent = (mm > 0 ? mm + 'm ' : '') + ss + 's';
+  // Knipper-class onder de 30s
+  if (s <= 30) el.classList.add('cd-warn');
+  else         el.classList.remove('cd-warn');
+}
+
+/* Refresh client-side activity-stempel + DOM. Aangeroepen na elke
+   succesvolle CLI-call zodat de countdown reset zonder /session te
+   hoeven herfetchen (server doet 't ook server-side). */
+function _bumpRepeaterActivity(){
+  if (!STATE.repeaterMgmt) return;
+  STATE.repeaterMgmt.last_activity_ms = Date.now();
+  _tickRepeaterCountdown();
+}
+
+async function repeaterKeepalive(){
+  // Verleng-knop: stuur een goedkope CLI (clock) zodat zowel onze sessie als
+  // (vermoedelijk) de firmware-zijde TTL gereset wordt. Reuse repeaterAction
+  // zodat de respons in CLI-history landt — user ziet bevestiging dat het
+  // door is.
+  if (!STATE.selectedRepeater) return;
+  repeaterAction('clock', 'verlengen', null);
 }
 
 async function repeaterLogin(){
@@ -273,13 +360,17 @@ async function repeaterLogin(){
   } catch(e) { return; }
   if (res.ok){
     STATE.repeaterMgmt.logged_in = true;
+    STATE.repeaterMgmt.last_activity_ms = Date.now();
     $('rep-mgmt-pw').value = '';
     toast(res.message || 'ingelogd');
+    renderDetail();
+    startRepeaterCountdown();
   } else {
     STATE.repeaterMgmt.logged_in = false;
+    stopRepeaterCountdown();
     $('rep-mgmt-login-status').textContent = res.message || res.status || 'mislukt';
+    renderDetail();
   }
-  renderDetail();
 }
 
 async function repeaterLogout(){
@@ -290,6 +381,7 @@ async function repeaterLogout(){
   } catch(e) { /* hard close lokaal */ }
   STATE.repeaterMgmt.logged_in = false;
   STATE.repeaterMgmt.last_status = null;
+  stopRepeaterCountdown();
   renderDetail();
 }
 
@@ -335,10 +427,14 @@ async function repeaterAction(cmd, label, confirmMsg){
   if (res.ok) {
     h.response = res.response || '(leeg / accepted)';
     h.ok = true;
+    _bumpRepeaterActivity();
   } else {
     h.response = res.error || res.message || res.status || 'fout';
     h.ok = false;
-    if (res.status === 'not_logged_in') STATE.repeaterMgmt.logged_in = false;
+    if (res.status === 'not_logged_in') {
+      STATE.repeaterMgmt.logged_in = false;
+      stopRepeaterCountdown();
+    }
   }
   renderDetail();
 }
@@ -379,10 +475,14 @@ async function repeaterRunCli(){
   if (res.ok) {
     h.response = res.response || '(leeg)';
     h.ok = true;
+    _bumpRepeaterActivity();
   } else {
     h.response = res.error || res.message || res.status || 'fout';
     h.ok = false;
-    if (res.status === 'not_logged_in') STATE.repeaterMgmt.logged_in = false;
+    if (res.status === 'not_logged_in') {
+      STATE.repeaterMgmt.logged_in = false;
+      stopRepeaterCountdown();
+    }
   }
   renderDetail();
 }
@@ -413,9 +513,18 @@ function renderRepeaterManage(){
         '<div id="rep-mgmt-login-status" class="note" style="margin-top:6px;color:#c33"></div>' +
       '</div>';
   } else {
+    // Countdown + verleng-knop. Cijfer komt van _tickRepeaterCountdown
+    // (1s interval; aangezet door startRepeaterCountdown na login/select).
     loginBlock =
       '<div class="detail-section"><h3>Ingelogd</h3>' +
-        '<div class="row"><button onclick="repeaterLogout()" class="sec">logout</button></div>' +
+        '<div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<span class="note">Sessie verloopt over <b id="rep-mgmt-countdown" class="rep-cd">…</b></span>' +
+          '<button onclick="repeaterKeepalive()" class="small" title="stuur een keepalive (clock) om de sessie te verlengen">verleng</button>' +
+          '<button onclick="repeaterLogout()" class="sec">logout</button>' +
+        '</div>' +
+        '<div class="note" style="margin-top:6px;color:#888">' +
+          'Elke verstuurde CLI-cmd telt ook als verleng. Bij verlopen valt de UI terug op het login-form.' +
+        '</div>' +
       '</div>';
   }
 

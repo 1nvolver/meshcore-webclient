@@ -1,6 +1,6 @@
 # Handoff — MeshCore Gateway Web Client
 
-Stand: versie 1.1.034. Deze notitie is bedoeld om het project in een nieuwe
+Stand: versie 1.1.048. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode-bestanden gaan apart mee.
 
 > **Voor per-versie wijzigingen / changelog** zie `CHANGELOG.md`. Dit bestand
@@ -36,6 +36,9 @@ SQLAlchemy async + aiosqlite, uvicorn. Geen build-step; één venv.
 | `static/js/05-reports.js` | Rapportages-view + complete repeater-management (rapport, ping, login, status, acties, CLI-tab, favorieten). |
 | `static/js/06-detail.js` | Detail-paneel (RSSI/SNR/hops/pad-visualisatie, copy/reply, raw-detail toggle). |
 | `static/js/07-bootstrap.js` | refresh/refreshHeaderOnly/refreshAndRerender, auth/account (loadMe, change-password modals), native notifs, init-call: `loadMe().then(refresh).then(...)` + `setInterval(refresh, 30000)` + `setInterval(refreshHeaderOnly, 10000)`. Laad-volgorde-kritisch — dit moet als laatste. |
+| `static/js/08-qr.js` | QR import/export (v1.1.035): generieke modal-helper (`_qrOpenModal`/`_qrCloseModal`), `showMyQR` (export eigen card via `/contacts/export` → QR-canvas + copy-hex), `showImportQR` (camera-scan via `getUserMedia` + jsQR; foto-upload als fallback; POST naar `/contacts/import`). Geladen vóór bootstrap.js zodat bootstrap nog steeds laatste blijft. |
+| `static/vendor/qrcode-generator.min.js` | Kazuhiko Arase, MIT, ~21KB. QR-encoder voor de export-modal. |
+| `static/vendor/jsQR.min.js` | cozmo, Apache-2.0, ~257KB. QR-decoder voor camera-scan en foto-upload. |
 | `bot.py` | DB-driven bot-framework. Hooks op de dispatch, leest bots uit DB (TTL-cache 30s), variable-resolver `{TIME}/{UPRADIO}/{UPNODE}/{HELP}`. |
 | `db.py` | SQLAlchemy async, alle modellen + helpers. `SCHEMA_VERSION` + auto-migraties in `init_db()`. |
 | `Dockerfile`, `docker-compose.yml`, `.dockerignore` | Container (python:3.12-slim, non-root, USB-device passthrough, `/data`-volume). |
@@ -60,11 +63,22 @@ SQLAlchemy async + aiosqlite, uvicorn. Geen build-step; één venv.
   `static/app.css` + `static/app.js`. Geen framework, geen bundler — browser
   laadt files direct via FastAPI `StaticFiles`. Versie-substitutie via Jinja2
   (`{{VERSION}}`). Lint nu direct via `node --check static/app.js`.
-- **Auth**: pbkdf2_sha256, sessies in-memory (restart = opnieuw inloggen).
-  Rollen `admin`/`user`; admin-tak in de tree volledig verborgen voor users.
+- **Auth**: pbkdf2_sha256, sessies in-memory dict `_SESSIONS` (gateway-restart
+  = opnieuw inloggen). Cookie is persistent (sliding 7d, `SESSION_MAX_AGE`)
+  zodat tab-close de sessie NIET wist — sinds v1.1.047. `_session()` checkt
+  inactiviteit; middleware `_sliding_session_cookie` refresht cookie +
+  `last_seen` (throttled per 60s). Rollen `admin`/`user`; admin-tak in de
+  tree volledig verborgen voor users.
 - **Channels**: slot 0 = Public (vast). Slots 1-7 = `hashtag` (key =
   `sha256("#naam")[:16]`, secret weglaten bij `set_channel`) of `private`
   (16-byte AES, zelf gegenereerd). `Channel.kind` onderscheidt ze.
+- **Flood-scope, twee niveaus** (v1.1.045): per-kanaal scope (`Channel.scope`,
+  DB) en companion-wide default scope (op de companion zelf, via SDK
+  `set_default_flood_scope` / `get_default_flood_scope`). `_apply_channel_scope`
+  in `gateway.py` valt bij ontbrekende channel-scope terug op
+  `state.default_scope` (gecachet bij connect + bij POST /admin/radio/default-scope)
+  zodat 't gedrag deterministisch is: channel-scope overrulet default,
+  geen channel-scope = default geldt.
 - **DB-migraties**: forward-only, additief. `init_db()` doet `create_all` +
   handmatige `ALTER TABLE` / `DROP+recreate` per versie-stap.
 - **Static-asset cache-buster**: `?v={{VERSION}}` op `<link>` + `<script>` URLs
@@ -129,10 +143,15 @@ vereist op enkele plekken conversie.
   favoriet-ster (DB-opslag, bovenaan gesorteerd). Ping-knop per row die
   `req_status_sync` aanroept en duration + SNR-there (uit status-payload) +
   SNR-here (best-effort via RX_LOG-buffer-correlatie) toont.
-- **Housekeeping — stale repeaters**: knop in admin → housekeeping toont
-  kandidaten (type 2|3, geen favoriet bij wélke user dan ook,
-  `last_advert > 28d`); na bevestiging verwijderen via `remove_contact`.
-  Drempel staat als constante `STALE_REPEATER_AGE_SECS` in `web.py`.
+- **Housekeeping — stale companion-contacten** (gegeneraliseerd in v1.1.039):
+  admin → housekeeping heeft een date-picker ("Sinds datum…") + type-checkboxes
+  (clients/repeaters/rooms; clients standaard uit) + "Favorieten overslaan"-flag.
+  Backend: `GET /admin/contacts/stale?days=N&types=2,3&skip_favorites=1` voor
+  preview, `POST /admin/contacts/cleanup` voor verwijderen. Legacy
+  `/admin/repeaters/stale` + `/admin/repeaters/cleanup` blijven werken met
+  hun oude default (28d, {2,3}, skip_favs=true) — geen breaking change.
+  Helper `_stale_contact_candidates(age_secs, type_set, skip_favorites)` in
+  `web.py` is de enige plek met de selectie-logica.
 - **OTA repeater-management**: vanuit het repeater-rapport een row klikken
   selecteert 'm; in het detail-paneel verschijnt het Manage-paneel met:
   login-form (admin-wachtwoord → `send_login_sync`), request-status-knop
@@ -156,15 +175,40 @@ vereist op enkele plekken conversie.
 - **Repeaters-paneel naar Admin-tak** (v1.1.030): zat eerder onder Rapportages,
   is nu admin-only (zowel UI-hide als backend route-check). Niet-admins zien
   alleen Rapportages → Overzicht.
-- **Mobile-responsive UI** (v1.1.022-029): 3 breakpoints (≤767px / 768-1199 /
-  ≥1200). Mobile: hamburger-drawer voor tree, bottom-sheet voor detail,
-  ≥40px tap targets, 16px input-font (geen iOS-zoom). Body gebruikt `100dvh`
-  (dynamic viewport height) zodat Chrome/Safari URL-bar geen content
-  wegduwt. Header truncate netjes met ellipsis op smal scherm; portrait
-  verbergt battery+uptime status-items (≤480px) om hoofd-elementen te
-  ontruimen.
+- **Mobile-responsive UI** (v1.1.022-029 fase A, v1.1.042 fase B): 3
+  breakpoints (≤767px / 768-1199 / ≥1200) + landscape-tablet sub-rule (1024-1199
+  landscape). Mobile: hamburger-drawer voor tree, bottom-sheet voor detail,
+  ≥40px tap targets, 16px input-font (geen iOS-zoom). Body gebruikt `100dvh`.
+  Header truncate met ellipsis; portrait ≤480px verbergt battery+uptime.
+  **Fase B (v1.1.042):**
+  Tabellen worden kaart-stijl op ≤767px (`table:not(.no-card) tr` = card,
+  `td[data-label]::before` = label-prefix). Alle dynamische tabellen in
+  02-tree.js / 04-admin.js / 05-reports.js hebben nu `data-label="Kolom"`
+  per `<td>`. Chat-controls: filter krijgt eigen rij, tijd-knoppen flex:1 1 0
+  voor evenredige verdeling. Admin-forms: row-inputs forceeerd naar 100%
+  breedte op mobile (overrult inline-styled widths). Landscape tablet
+  (1024-1199, orientation:landscape): detail-pane inline ipv overlay zodat
+  je tree+main+detail tegelijk ziet (zoals desktop, maar compacter).
 - **Static-asset cache-buster** (v1.1.032): `?v={{VERSION}}` op CSS/JS URLs.
   Versie-bump invalideert browser-cache automatisch.
+- **QR import/export van contacten** (v1.1.035, formaat opgewaardeerd in
+  v1.1.037 naar officieel `meshcore://contact/add?...`): self-serve export
+  van eigen card via avatar-menu → "Mijn QR (deel contact)…". Modal toont QR
+  + copy-URL-knop. Import via **DM → Contactpersonen** (sinds v1.1.037 niet
+  meer onder Admin → Contacten): "Importeer contact via QR…" — camera-scan
+  (`getUserMedia` + jsQR; vereist HTTPS of localhost) of foto-upload. Bij
+  succesvolle officieel-formaat-import wordt de contact automatisch óók in
+  `/my/contacts` opgeslagen (auto-add met name+pubkey uit de URL). Vendor-libs
+  lokaal in `static/vendor/`. De oude per-pubkey handmatig-toevoeg-form is in
+  v1.1.037 verwijderd — alles via QR.
+- **Privé-kanalen eigen tree-tak** (v1.1.037): aparte `grp-private` tussen
+  `grp-chat` (Public + hashtag) en `grp-dm`. Channel-rendering splitst op
+  `kind`: hashtag in `#tree-channels`, private in `#tree-private`. Admin-only
+  "Beheren…"-item bovenaan + `+ privé-kanaal`-link; non-admin ziet alleen de
+  channels (om in te chatten). De Channels-tab onder Admin is vervangen door
+  een aparte view onder Privé (selectPrivChansManager). Backend: bestaande
+  `/admin/channels/add` en `/admin/channels/remove` + nieuwe
+  `/admin/channels/{idx}/export` en `/admin/channels/import` (zie boven).
 
 ---
 
@@ -182,7 +226,16 @@ vereist op enkele plekken conversie.
   SNR). UI toont alleen wat aanwezig is.
 - **Bot-cache TTL 30s**: admin-wijzigingen aan bots zijn pas na ≤30s actief.
 - **In-memory sessies**, geen CSRF, geen rate-limiting op `/login`. Acceptabel
-  voor home-LAN, niet voor blootstelling op internet.
+  voor home-LAN, niet voor blootstelling op internet. Cookie is sinds v1.1.047
+  persistent (7d sliding) — handig op vertrouwde apparaten, ongewenst op
+  gedeelde. Logout-knop wist 'm netjes; bij gateway-restart logt iedereen uit.
+- **`refresh()` skipt `renderDetail()` als het repeater-manage-paneel open is**
+  (sinds v1.1.044). Reden: dat paneel heeft uncontrolled password-input,
+  CLI-input en gescrollde history die elke 30s gereset werden. Het paneel is
+  event-driven (login/status/cli) — geen periodieke server-data om te tonen.
+  Als je later content toevoegt die wél periodiek vers moet zijn: voeg een
+  smal `refreshRepeaterPanelData()` toe dat alleen de status-velden bijwerkt
+  zonder full re-render.
 - **`User.allowed_views`** kolom bestaat maar is **inactief**. Sinds v1.1.030
   is alle admin-only functionaliteit (incl. Repeaters) verplaatst naar de
   Admin-tak met pure role-based check; per-user fine-grained menu-permissies
@@ -219,6 +272,17 @@ vereist op enkele plekken conversie.
   meshcore-cli alias). `clock` (no args) leest 'm. `advert` doet een
   flood-advert. `reboot` herstart. Andere parameters (radio/owner/position/
   region/password) hebben nog geen wrapper-knop; gebruik daarvoor de CLI-tab.
+- **QR camera-scan vereist HTTPS of localhost**: `navigator.mediaDevices.getUserMedia`
+  is door browsers geblokkeerd op plain-HTTP-non-localhost (secure-context-policy).
+  Op een LAN-Pi via `http://192.168.x.x` werkt scannen dus niet — gebruik dan
+  foto-upload of zet TLS op (reverse-proxy). Export-QR werkt overal.
+- **QR-payload-formaten (sinds v1.1.037):**
+  - **Contact**: officieel MeshCore-formaat `meshcore://contact/add?name=<urlencoded>&public_key=<64hex>&type=<int>` (zie https://docs.meshcore.io/qr_codes/). Volledig interop met de MeshCore Android-app. Backend `/contacts/export` bouwt deze URL uit `get_self_info` (eigen card) of `mc.contacts[pk]` (andermans card). Import via `/contacts/import` accepteert deze URL én — backward-compat — de oude `meshcore://<rawhex>` van v1.1.036 (via `import_contact(bytes)`).
+  - **Channel**: officieel `meshcore://channel/add?name=<urlencoded>&secret=<32hex>`. Backend endpoints: `GET /admin/channels/{idx}/export` (admin-only; gebruikt `get_channel(idx)` om de 16-byte secret op te halen) en `POST /admin/channels/import` (admin-only; parse URL, pak volgend vrij slot 1-7, `set_channel(slot, name, secret)`, DB-spiegel als `private`).
+- **jsQR bundle is groot** (~257KB). Geen aparte minified versie van upstream;
+  zit standaard in `dist/jsQR.js` als webpack-bundled output. Op snelle LAN's
+  prima, op slow mobile data eerste page-load ~+0.3s. Lazy-load is denkbaar
+  maar zou de `<script src>`-volgorde-aanname doorbreken — laat zo.
 - Geen automated tests.
 
 ---
@@ -270,21 +334,8 @@ refresh meestal niet nodig dankzij cache-buster.
 > portrait + 100dvh, Repeaters→Admin, callsign, threading) staan niet meer
 > in deze lijst — zie `CHANGELOG.md`.
 
-**Functioneel — eerstvolgend:**
-1. **Callsign-UI als HTML-modal** ipv `prompt()`. Op desktop Chrome biedt
-   `prompt()` geen emoji-picker; modal kan de bestaande
-   `#emoji-picker`-component hergebruiken.
-2. **QR import/export van contacten**. `export_contact`/`import_contact`
-   bestaan al als endpoints in `web.py`, UI is bewust nog niet gebouwd.
-   Camera-scan vereist externe JS-lib (jsQR).
-3. **Mobile fase B** — tabellen → kaart-stijl op mobile (per-`<td>`
-   `data-label="..."`-attributes nodig in dynamische HTML; raakt
-   02-tree.js / 04-admin.js / 05-reports.js). Chat-controls compacter
-   (filter + tijd-knoppen wrappen nu lelijk op smal scherm). Admin-forms
-   grondiger. Landscape-tablet tweaks.
-
 **Repeater-management — Fase B (convenience-forms):**
-4. Wrapper-knoppen/forms voor de overige veelgebruikte CLI-commando's:
+1. Wrapper-knoppen/forms voor de overige veelgebruikte CLI-commando's:
    - Radio-settings (`set radio <freq> <bw> <sf> <cr>`) + tx-power.
    - Advert-intervallen (auto-flood + zero-hop).
    - Owner-info (`get name` / `set name X`).
@@ -292,20 +343,21 @@ refresh meestal niet nodig dankzij cache-buster.
    - Admin-wachtwoord wijzigen.
    - Region-management.
    Exacte syntax-bron: `meshcore-cli/REPEATER_COMMANDS.md` op GitHub.
-5. Telemetry-paneel via `req_telemetry_sync` (LPP-decoded).
-6. Sessie-keepalive of zichtbare countdown van repeater-login.
+2. Telemetry-paneel via `req_telemetry_sync` (LPP-decoded).
+3. ~~Sessie-keepalive of zichtbare countdown van repeater-login.~~ (v1.1.046 — zichtbare countdown + expliciete verleng-knop. Auto-keepalive bewust niet — USB-traffic + onzekere firmware-TTL.)
 
-**Onderhoud / robuustheid:**
-7. Smoke-tests voor `db.py`-helpers, password-hashing, schema-migraties.
-8. Threading-performance: huidige `isInThread` is O(N) per check (lineaire
+**Onderhoud / robuustheid (alleen bij trigger):**
+4. Smoke-tests voor `db.py`-helpers, password-hashing, schema-migraties —
+   pas relevant bij grotere schema-wijziging.
+5. Threading-performance: huidige `isInThread` is O(N) per check (lineaire
    scan in `STATE.msgs`). Voor typische 30-100 msgs prima; bij 1000+ in
    één view zou een hash-map met parent-lookup nodig zijn.
 
 **Laag — alleen bij groei / minder vertrouwd netwerk:**
-9. CSRF-tokens op admin-POSTs, rate-limiting op `/login`, persistente sessies.
+6. CSRF-tokens op admin-POSTs, rate-limiting op `/login`, persistente sessies.
 
 **Mogelijk overbodig (overwegen op te ruimen):**
-10. `User.allowed_views`-kolom (zie sectie 6). Sinds Repeaters in Admin staat
+7. `User.allowed_views`-kolom (zie sectie 6). Sinds Repeaters in Admin staat
     is er geen use-case meer; kolom kost niets maar verwart toekomstige
     lezers. Drop via een migratie kost ~10 minuten.
 

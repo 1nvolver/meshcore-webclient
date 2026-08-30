@@ -12,19 +12,20 @@ In één regel: **een MeshCore-companion zichtbaar en bestuurbaar maken vanuit j
 
 Concrete functionaliteit:
 
-- **Chat**: real-time channel- en DM-berichten via WebSocket. Public channel, hashtag-kanalen (gedeelde naam-PSK) en private kanalen (eigen 128-bit AES-key).
+- **Chat**: real-time channel- en DM-berichten via WebSocket. Tree splitst Chat (Public + hashtag) en Privé (eigen 128-bit AES-key per kanaal) in eigen takken.
+- **QR-import/export** voor contacten en privé-kanalen via het officiële [MeshCore QR-formaat](https://docs.meshcore.io/qr_codes/) (`meshcore://contact/add?...` / `meshcore://channel/add?...`) — interop met de MeshCore Android-app: jouw QR's zijn door de Android-app scanbaar en omgekeerd. Camera-scan (`getUserMedia` + jsQR) of foto-upload.
 - **Threading**: berichten die replies hebben krijgen een `💬N`-badge; klik om alleen die conversatie te tonen. Hybride: expliciet via Reply-knop én heuristisch via `@[X]`-mentions (binnen 30 min). Per-user aan/uit toggle.
 - **Historie**: alle in- en uitgaande berichten in SQLite, met paginatie ("laad oudere") en server-side tekst-zoek.
 - **Detail-paneel** per bericht: signaal-kleur (SNR-gebaseerd), hops, alle paden waarover een bericht is binnengekomen ("Heard X Times"), met repeater-namen waar bekend.
-- **Multi-user web-UI**: één admin (eerste setup), daarna kunnen extra gebruikers worden aangemaakt met rol `admin` of `user`. Gebruikers zien Chat, DM en Rapportages → Overzicht; Admin-tak (incl. Repeaters-paneel) blijft verborgen.
-- **Callsign**: optionele 1-3-tekens (of emoji) identifier per user; wordt automatisch als `[XXX] ` voor uitgaande berichten gezet zodat ontvangers zien welke web-user het verstuurd heeft.
-- **Per-user opgeslagen contactpersonen** in DM-tree, met label en notities.
-- **Admin-paneel**: radio-instellingen (freq/bw/sf/cr/tx-power/path-hash-mode), node (naam/locatie/reboot/advert), kanalen (met optionele flood-scope), contacten, repeaters (favorieten, stale-cleanup, OTA-management), housekeeping (DB clean/vacuum), gebruikers, bots, voorkeuren (telemetry, multi-acks, auto-add adverts).
+- **Multi-user web-UI**: één admin (eerste setup), daarna kunnen extra gebruikers worden aangemaakt met rol `admin` of `user`. Gebruikers zien Chat, Privé-kanalen, DM en Rapportages → Overzicht; Admin-tak (incl. Repeaters-paneel) en Privé → Beheren blijven verborgen voor non-admins.
+- **Callsign**: optionele identifier (max 16 codepoints, mag emoji bevatten) per user; wordt automatisch als `[XXX] ` voor uitgaande berichten gezet zodat ontvangers zien welke web-user het verstuurd heeft.
+- **Per-user opgeslagen contactpersonen** in DM-tree; QR-import voegt automatisch toe aan zowel companion- als per-user-lijst.
+- **Admin-paneel**: radio-instellingen (freq/bw/sf/cr/tx-power/path-hash-mode), node (naam/locatie/reboot/advert), kanalen (hashtag + private; private heeft een eigen "Privé → Beheren"-view met QR-share/import), repeaters (favorieten, OTA-management), housekeeping (DB clean/vacuum, generieke stale-contact-cleanup met date-picker + type-filter), gebruikers, bots, voorkeuren (telemetry, multi-acks, auto-add adverts).
 - **Rapportages**: berichten-per-uur grafiek met instelbare periode, top-kanalen, ack-rate (DM).
 - **Bot-framework**: simpele admin-defined bots die op `?keyword` reageren in een specifiek kanaal, met variabelen `{TIME}`, `{UPRADIO}`, `{UPNODE}`, `{HELP}`.
 - **Notificaties**: gele highlight + geluid + browser-notification bij berichten waarin jouw node-naam ge-`@`-ed wordt.
 - **Implicit ack-tracking** voor channel-msgs (wanneer een repeater jouw bericht herhaalt) en gewone DM-acks, met inline `✓`/`↻`/`✓✓`-indicatoren.
-- **Mobile-responsive UI**: 3 breakpoints (mobile ≤767px / tablet 768-1199 / desktop ≥1200). Op mobile: hamburger-drawer voor de tree, bottom-sheet detail, 16px input-font (voorkomt iOS-zoom), 100dvh body-hoogte (corrigeert voor Chrome/Safari URL-bar).
+- **Mobile-responsive UI**: 3 breakpoints (mobile ≤767px / tablet 768-1199 / desktop ≥1200) + landscape-tablet sub-rule (1024-1199 landscape). Op mobile: hamburger-drawer voor de tree, bottom-sheet detail, dynamische tabellen renderen als kaartjes (geen horizontaal scrollen), 16px input-font (voorkomt iOS-zoom), 100dvh body-hoogte (corrigeert voor Chrome/Safari URL-bar). iPad-landscape krijgt 3-koloms inline detail-pane.
 
 ---
 
@@ -349,9 +350,14 @@ Een gewone gebruiker wordt door de admin aangemaakt:
 
 Een user kan **niets in het admin-menu** zien (de hele Admin-tak in de tree is verborgen, inclusief Repeaters). De Quit-knop in het avatar-menu is ook admin-only. Wel toegankelijk: Chat, DM, Rapportages → Overzicht.
 
-### Wachtwoord wijzigen
+### Mijn profiel-menu
 
-Iedere gebruiker kan het eigen wachtwoord wijzigen via het avatar-icoon rechtsboven → **Wachtwoord wijzigen**. Drie prompts: huidig, nieuw, nieuw nogmaals.
+Het avatar-icoon rechtsboven geeft een compact menu met **Mijn profiel…**, Logout en (admin) Quit. Mijn profiel opent een modal met de persoonlijke instellingen:
+
+- **Callsign** — zie hieronder
+- **Threading-indicators** — aan/uit toggle (per-browser, in localStorage)
+- **Mijn QR (deel contact)** — toont QR met je eigen contact-card in het officiële MeshCore-formaat
+- **Wachtwoord wijzigen** — modal met drie inputs (huidig / nieuw / nogmaals), valideert ≥6 tekens en match
 
 ### Reset wachtwoord (admin)
 
@@ -361,9 +367,9 @@ Admin kan in **Admin → Gebruikers** op `reset pw` klikken bij een user, een ni
 
 Bij meerdere mensen die vanaf dezelfde gateway/companion uitzenden ziet de ontvangende kant alleen de node-naam — niet wie van de web-users het bericht heeft gestuurd. Met een **callsign** voeg je een kort prefix toe aan elk uitgaand bericht.
 
-- Klik op het avatar-icoon → **Callsign instellen…**
-- Vul 1-3 tekens of emoji in (bv. `DMH`, `PA3`, `🚀✨`). Leeg betekent uit.
-- Bij verzenden wordt de tekst geprefixt: `[DMH] hallo allemaal`.
+- Avatar-icoon → **Mijn profiel…** → **Callsign**
+- Vul een korte identifier in (max 16 codepoints, mag emoji bevatten — bv. `DMH`, `PA3`, `🚀✨`). Inline emoji-picker beschikbaar. Leeg betekent uit.
+- Live voorbeeld toont `[DMH] Hallo!`. Bij verzenden wordt elk bericht geprefixt.
 
 Per-user, self-serve — admins hoeven niets te beheren. De callsign wordt opgeslagen in de DB; bestaande sessies worden direct geüpdate zonder her-login.
 
@@ -371,15 +377,70 @@ Per-user, self-serve — admins hoeven niets te beheren. De callsign wordt opges
 
 ## Channels
 
-Drie types op de companion (in de **Channels**-admin-pagina te beheren):
+Drie types op de companion:
 
-- **Public** (slot 0, vast): de standaard publieke channel. Niet te wijzigen of verwijderen.
-- **Hashtag** (slots 1-7): een gedeelde "thema"-channel. De key is `sha256("#naam")[:16]`. Iedereen die hetzelfde slot configureert met hetzelfde `#naam` krijgt automatisch dezelfde key — geen sleutel-uitwisseling nodig. In de UI altijd met `#`-prefix.
-- **Private** (slots 1-7): unieke 128-bit AES-key per channel. Bij toevoegen wordt de key automatisch gegenereerd; de hex-versie wordt eenmalig getoond zodat je 'm aan andere leden kan delen.
-
-In de tree onder **Chat** staan alle slots als klikbare items. Naast de admin-route kun je hashtag-channels ook snel toevoegen via de `+ hashtag` snelkoppeling in de tree zelf.
+- **Public** (slot 0, vast): de standaard publieke channel. Niet te wijzigen of verwijderen. Staat in de tree onder **Chat**.
+- **Hashtag** (slots 1-7): een gedeelde "thema"-channel. De key is `sha256("#naam")[:16]`. Iedereen die hetzelfde slot configureert met hetzelfde `#naam` krijgt automatisch dezelfde key — geen sleutel-uitwisseling nodig. In de UI altijd met `#`-prefix. Staat in de tree onder **Chat**. Snel toevoegen via `+ hashtag` in de tree.
+- **Private** (slots 1-7): unieke 128-bit AES-key per channel. Staat in de tree onder een aparte **Privé**-tak (tussen Chat en DM). Aanmaken, verwijderen en QR-import/export via **Privé → Beheren** (admin-only).
 
 Per kanaal kan optioneel een **flood-scope** worden ingesteld (bv. `#europa`) — vóór elke send naar dat kanaal wordt `set_flood_scope()` op de companion aangeroepen.
+
+### Privé-kanaal delen via QR
+
+Voor private kanalen genereer je via **Privé → Beheren** een QR met het officiële MeshCore-formaat:
+
+```
+meshcore://channel/add?name=<urlencoded>&secret=<32hex>
+```
+
+Ontvanger scant 'm (camera of foto-upload via dezelfde Beheren-view) en het kanaal verschijnt automatisch in zijn Privé-tak. Werkt ook met de MeshCore Android-app.
+
+---
+
+## QR-import / -export
+
+De web-client gebruikt het **officiële MeshCore QR-formaat** ([docs](https://docs.meshcore.io/qr_codes/)) voor zowel contacten als privé-kanalen. Dat betekent dat:
+
+- QR's die je hier genereert door de **MeshCore Android-app** worden herkend
+- QR's die de **Android-app** maakt door deze client worden herkend
+- (Onze v1.1.036-pre QR's met raw-hex worden uit backward-compat nog gelezen, maar niet meer gegenereerd)
+
+### Contact-QR
+
+Formaat:
+```
+meshcore://contact/add?name=<urlencoded>&public_key=<64hex>&type=<int>
+```
+
+**Exporteren (je eigen contact):**
+Avatar-icoon → **Mijn profiel…** → **Mijn QR (deel contact)**. Toont de QR + "Kopieer URL".
+
+**Importeren:**
+**DM → Contactpersonen** → "Importeer contact via QR…". Camera-scan of foto-upload. Bij succes wordt de contact aan zowel de **companion** (admin-only-endpoint) als aan jouw eigen **`/my/contacts`**-lijst toegevoegd, zodat je meteen kunt DM'en.
+
+> Importeren is een **admin-actie** (de companion-`add_contact`-call vereist admin-rechten). Non-admins zien wel hun eigen lijst maar geen import-knop.
+
+### Channel-QR (privé-kanaal)
+
+Formaat:
+```
+meshcore://channel/add?name=<urlencoded>&secret=<32hex>
+```
+
+**Exporteren:** **Privé → Beheren** → "QR" knop per kanaal. Toont QR + URL.
+
+**Importeren:** **Privé → Beheren** → "Importeer via QR…". Pakt automatisch het eerstvolgende vrije slot (1-7); faalt met 409 als alles vol zit.
+
+### Camera-scan vs foto-upload
+
+- **Camera-scan** gebruikt `navigator.mediaDevices.getUserMedia` en vereist een **secure context** (HTTPS of `localhost`). Op `http://192.168.x.x` werkt scannen niet door browser-policy.
+- **Foto-upload** werkt overal — neem een screenshot van iemands QR (of fotografeer 'm) en upload.
+
+De scanner gebruikt jsQR met `attemptBoth`-modus (ook geïnverteerde QR's) en vraagt 1280×720 video-resolutie voor betrouwbare decodering van schermafbeeldingen.
+
+### Vendor-libs
+
+QR-genereren via [`qrcode-generator`](https://github.com/kazuhikoarase/qrcode-generator) (~21 KB, MIT) en decoderen via [`jsQR`](https://github.com/cozmo/jsQR) (~257 KB, Apache-2.0). Beide staan lokaal in `static/vendor/` — geen externe CDN, werkt op een offline LAN-Pi.
 
 ---
 
@@ -396,7 +457,7 @@ Wanneer een gesprek bestaat uit meerdere berichten over hetzelfde onderwerp, hel
 - **Expliciet:** klik op een bericht → in het detail-paneel "Reply" — vult `@[Afzender]` in de input én markeert intern dat de volgende send een reply is op die msg (`parent_id` in DB).
 - **Heuristisch:** als een ander bericht begint met `@[X]` en X heeft binnen 30 min een eigen bericht in hetzelfde kanaal verstuurd, wordt 't automatisch als reply op dat msg behandeld. Geen DB-persistentie nodig — werkt ook bij berichten van non-web-clients.
 
-**Toggle uitzetten:** avatar-menu → "Threading-indicators: aan/uit". Per browser opgeslagen in localStorage. Uit = geen badges, geen klikbare filter.
+**Toggle uitzetten:** avatar-menu → **Mijn profiel** → klik op "Threading-indicators". Per browser opgeslagen in localStorage. Uit = geen badges, geen klikbare filter.
 
 **Wat onthouden blijft over restarts:** alleen expliciete Reply-relaties (via DB-veld `parent_id`). Mention-heuristiek wordt elke render opnieuw berekend.
 
@@ -443,12 +504,12 @@ Berichten waarin jouw node-naam of pubkey-prefix ge-`@`-ed wordt:
 
 ### Contactpersonen voor DM's
 
-DM's vereisen dat de **companion-firmware** de bestemming kent (om een routing-pad te hebben). Onze per-user **Contactpersonen**-lijst is alleen een lokaal label — de companion krijgt geen extra info als je daar handmatig een pubkey toevoegt.
+DM's vereisen dat de **companion-firmware** de bestemming kent (om een routing-pad te hebben). Onze per-user **Contactpersonen**-lijst (DM → Contactpersonen) is in principe een lokaal label, maar de QR-import-flow vult zowel de companion-lijst als de eigen lijst tegelijk — dus na een succesvolle QR-import is direct DM mogelijk.
 
 In de Contactpersonen-tabel zie je per item:
 
 - **`✓`** = bekend bij companion → DM werkt
-- **`⚠`** = alleen lokaal opgeslagen → DM faalt met "not found"
+- **`⚠`** = alleen lokaal opgeslagen (kan voorkomen na restoren van een DB-backup) → DM faalt met "not found"
 
 Een onbekende contact wordt vanzelf bekend zodra de companion een **advert** van die node ontvangt. Vanaf dat moment werkt DM. Zet eventueel `Auto-add adverts` aan in **Admin → Voorkeuren** zodat álle adverts automatisch worden opgeslagen.
 
@@ -500,6 +561,16 @@ Web-sessies worden in-memory opgeslagen. Bij gateway-herstart moet iedereen opni
 - Schema-migraties draaien automatisch bij start (zie de `schema=migrated:X->Y`-regel in de log).
 - Geen automatische cleanup — gebruik **Admin → Housekeeping** om oudere berichten te verwijderen of de DB te compacteren (`VACUUM`).
 
+### Stale companion-contacten opruimen
+
+Onder **Admin → Housekeeping** zit een sectie "Stale companion-contacten opruimen" met:
+
+- **Date-picker**: alles ouder dan deze datum is kandidaat (default: 28 dagen geleden, met live "(X dagen geleden)"-hint)
+- **Type-checkboxes**: clients (uit), repeaters (aan), rooms (aan) — clients zijn standaard uit zodat DM-partners die toevallig een tijdje offline zijn niet per ongeluk worden weggesneeuwd
+- **Favorieten overslaan** (aan): repeater/room-favorieten worden gespaard
+
+"Toon kandidaten" laat de lijst zien; "Verwijder N contacten" voert de cleanup uit. De backend-endpoints `/admin/contacts/stale` en `/admin/contacts/cleanup` zijn admin-only. De legacy `/admin/repeaters/stale` + `/admin/repeaters/cleanup` werken nog steeds met defaults (28 dagen, {2,3}, skip-favs) voor backward-compat met scripts.
+
 ### Fysieke radio-instellingen
 
 `Admin → Radio` past parameters live aan, maar de companion vereist een **reboot** voor sommige settings (`set_radio`, `set_tx_power`). De UI toont dat in de toast en je vindt de Reboot-knop onder **Admin → Node**.
@@ -524,6 +595,9 @@ Achter de schermen pingt de gateway elke 60 seconden de companion. Drie missers 
 | Web UI werkt na update niet meer                 | Browser-cache; hard refresh (Cmd-Shift-R / Ctrl-Shift-R). Cache-buster `?v=...` voorkomt dit meestal sinds v1.1.032 |
 | Knop in avatar-menu doet niets na update         | Static JS niet meegekopieerd. Controleer of `static/js/*.js` op de Pi compleet is, hard-refresh browser |
 | Chat-input valt onder Chrome URL-bar op mobiel   | Update naar ≥v1.1.029 (gebruikt `100dvh` ipv `100vh`)                                  |
+| Camera-scan QR doet niets / "Camera niet beschikbaar" | Camera-scan vereist HTTPS of localhost. Op `http://192.168.x.x` werkt 't niet door browser-policy. Gebruik foto-upload, of zet TLS op (reverse-proxy). |
+| QR wordt niet gedetecteerd bij scannen           | Status-text toont "Zoeken… (frames: N, res: WxH)" — als frames stijgen maar geen hit: helderder licht, dichterbij, of voor wat afstand om hele QR in beeld te krijgen. Anders foto-upload. |
+| Geïmporteerd contact verschijnt niet in DM-tree  | Was 't een legacy `meshcore://<rawhex>`-QR? Die voegt niet auto toe aan `/my/contacts`. Voor officieel `meshcore://contact/add?...` gebeurt dat wel. |
 | Migratie-fout bij start na update                | Backup DB (kopieer `meshcore.db` weg) en check logs — schema-migraties zijn additief, bij ALTER-fout meestal corruptie in oude data |
 
 Voor diepere diagnose: start met `MESHCORE_DEBUG=1` om alle inkomende meshcore-events te zien.
@@ -604,15 +678,19 @@ WebClient/
   templates/
     index.html                        — Jinja2-template voor de chat-UI (header, tree, main, detail)
   static/
-    app.css                           — alle styling + 3 mobile-breakpoints
+    app.css                           — alle styling + 3 mobile-breakpoints + landscape-tablet sub-rule
     js/
-      01-core.js                      — STATE + helpers + threading-tree-bouwer
-      02-tree.js                      — tree-rendering + view-switching (chat/admin/reports/contacts)
-      03-chat.js                      — chat-render + socketio + emoji-picker + thread-badges
-      04-admin.js                     — alle admin-views (radio/node/prefs/channels/contacten/bots/...)
+      01-core.js                      — STATE + helpers + modal (openModal/closeModal) + name-lookup + threading-tree-bouwer
+      02-tree.js                      — tree-rendering + view-switching (chat/privchans/contacts/admin/reports) + Privé-kanaal-beheer + DM-Contactpersonen
+      03-chat.js                      — chat-render + socketio + emoji-picker + thread-badges + EMOJIS-array
+      04-admin.js                     — alle admin-views (radio/node/prefs/channels/bots/housekeeping/users) + stale-cleanup met date-picker
       05-reports.js                   — rapportages + repeater-management
       06-detail.js                    — detail-paneel + path-visualisatie + Reply-flow
-      07-bootstrap.js                 — refresh-loops + auth/account + native notifs + threading-toggle
+      07-bootstrap.js                 — refresh-loops + Mijn profiel-modal + callsign-modal + password-modal + threading-toggle + native notifs
+      08-qr.js                        — QR-import/export voor contacten en privé-kanalen (gebruikt openModal + jsQR/qrcode-generator)
+    vendor/                           — third-party JS-libs (geen CDN, werkt offline)
+      qrcode-generator.min.js         — QR-encoder (Kazuhiko Arase, MIT)
+      jsQR.min.js                     — QR-decoder (cozmo, Apache-2.0)
   meshcore.db                         — SQLite-database (auto-aangemaakt; in container: /data/meshcore.db)
   pyproject.toml                      — dependencies (Python 3.12+)
   requirements.txt                    — pinned deps voor pip / Docker-build

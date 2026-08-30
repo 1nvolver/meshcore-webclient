@@ -237,6 +237,21 @@
     .detail-content{padding-top:52px}
   }
 
+  /* ---- TABLET LANDSCAPE (min 1024px, max 1199px, landscape) -------
+     Op een iPad/landscape-tablet of klein laptop-formaat is er genoeg
+     breedte voor de 3-koloms-layout zoals op desktop. Detail-pane staat
+     dan inline naast main ipv als overlay. Geen backdrop nodig. (v1.1.042) */
+  @media (min-width:1024px) and (max-width:1199px) and (orientation:landscape){
+    .pane.detail{position:static;transform:none;flex:0 0 260px;
+                 border-left:1px solid #ccc;box-shadow:none;
+                 background:#f8f8f8;transition:flex-basis 0.15s}
+    .pane.detail.collapsed{flex-basis:28px !important}
+    .pane.detail .collapse-toggle{display:flex}
+    .detail-close{display:none}
+    .detail-content{padding-top:14px}
+    body.detail-open .mobile-backdrop{display:none}
+  }
+
   /* ---- MOBILE (<=767px) ------------------------------------------- */
   @media (max-width:767px){
     header{padding:0 6px}
@@ -296,9 +311,17 @@
     .pane.main{flex:1 1 100%}
 
     /* Chat-controls compacter, tap-friendly */
+    /* Chat-controls op mobile (v1.1.042 fase B):
+       - Filter krijgt eigen rij (flex-basis 100%)
+       - Tijd-knoppen verdelen evenredig de breedte (flex:1 1 0) zodat ze
+         in één of twee strakke rijen passen ipv ongelijk wrappen.
+       - ↑ ouder en pauze-knop iets breder zodat label/symbool past. */
     #chat-controls{padding:8px 6px;gap:4px}
-    #chat-filter{flex:1 0 100%;padding:8px 10px;font-size:14px}
-    .cc-btn{padding:8px 10px;font-size:13px;min-height:36px}
+    #chat-filter{flex:1 0 100%;padding:8px 10px;font-size:16px}
+    .cc-btn{padding:8px 6px;font-size:13px;min-height:40px;flex:1 1 0;min-width:0}
+    /* Pauze + 'nu' zijn karakter-knoppen — geef ze iets minder space-equal-share. */
+    .cc-btn.cc-now{flex:0 0 auto;min-width:44px}
+    .cc-btn.cc-pause{flex:0 0 auto;min-width:44px}
 
     /* Chat-form en messages */
     #log{padding:8px 10px;font-size:13px}
@@ -311,18 +334,39 @@
     .admin-content{padding:8px}
     .admin-content section{padding:10px;margin-bottom:10px}
     .row{flex-direction:column;align-items:stretch;gap:6px}
-    .row label{flex:none;width:auto}
-    .row input,.row select{font-size:16px;width:100%}
-    .row input[type=number]{width:100%}
-    .row input[type=text]{min-width:0;width:100%}
+    .row label{flex:none;width:auto;font-weight:600;font-size:0.85em;color:#444;text-transform:uppercase;letter-spacing:0.03em}
+    /* Forceer alle row-inputs naar 100% breedte; inline `style="width:120px"`
+       e.d. werken op desktop maar maken inputs op mobile lelijk smal aan de
+       linkerkant van de kolom. !important nodig omdat inline-styles anders
+       winnen. */
+    .row input,.row select,.row textarea{font-size:16px;width:100% !important;max-width:100% !important;flex:1 1 auto !important;min-width:0 !important;box-sizing:border-box}
     .row button{width:100%;min-height:44px;font-size:15px}
+    /* Checkbox-labels (housekeeping types) bewaren hun inline layout —
+       force ze NIET full-width. Mochten ze toch te smal worden: tijdje
+       inline-styles toevoegen. */
+    .row label input[type=checkbox]{width:auto !important;flex:0 0 auto !important;margin-right:6px}
 
-    /* Tabellen -> kaarten op mobile.
-       Werkt door rij = block, cell = block met data-label-prefix. Vereist
-       dat de JS dynamisch gegenereerde tabellen `data-label="Kolomnaam"` op
-       elke <td> zet — dat is een follow-up; voor nu doen we horizontaal
-       scrollbaar als veilige fallback. */
-    table{display:block;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch}
+    /* Tabellen -> kaarten op mobile (v1.1.042 mobile fase B).
+       Strategie: thead verbergen, elke <tr> wordt een card (border + padding),
+       elke <td> krijgt zijn `data-label="..."` als prefix-label via ::before.
+       Een <td> zonder data-label valt terug naar 'plain block' (geen prefix) —
+       handig voor 'placeholder'-cellen of action-cellen waar je geen label
+       wilt zien.
+
+       Tabellen die deze stijl NIET willen (bv. een eenvoudige 2-koloms
+       statistiektabel) kunnen `.no-card` op het table-element zetten. */
+    table:not(.no-card){display:block;background:none;border-collapse:separate}
+    table:not(.no-card) thead{display:none}
+    table:not(.no-card) tbody{display:block}
+    table:not(.no-card) tr{display:block;background:#fff;border:1px solid #e5e5e5;border-radius:5px;padding:8px 10px;margin-bottom:8px;box-shadow:0 1px 2px rgba(0,0,0,0.03)}
+    table:not(.no-card) td{display:block;padding:3px 0;border:none;white-space:normal;word-break:break-word}
+    table:not(.no-card) td[data-label]::before{content:attr(data-label) ":  ";color:#666;font-weight:600;font-size:0.8em;text-transform:uppercase;letter-spacing:0.03em;display:inline-block;min-width:90px}
+    /* Een td die zelf colspan/full-bleed wil (placeholder 'geen items'): */
+    table:not(.no-card) td[colspan]{text-align:center;font-style:italic}
+
+    /* Fallback voor tabellen ZONDER data-label-conversie (legacy): plain
+       horizontal scroll, zoals fase-A had. */
+    table.no-card{display:block;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch}
 
     /* Detail-pane content: meer padding, klikbare items wat groter.
        padding-top houdt rekening met de drijvende X-knop bovenin. */
@@ -333,3 +377,76 @@
     .avatar{width:34px;height:34px}
     .menu{right:6px}
   }
+
+  /* ---- generic modal (QR import/export + andere pop-ups) ----------
+     Layout-doelen:
+     - Modal-box mag NIET tegen schermrand vallen (telefoons met ronde
+       hoeken clippen knoppen daar weg). Vandaar `padding` op overlay
+       en `safe-area-inset-bottom` als extra marge bij notched devices.
+     - Actions centreren en groot genoeg voor tap (44px hoog, 120px breed
+       als ruimte er is).
+     - Modal-body scrollt; modal-actions blijven als sticky footer onderin
+       de modal-box altijd zichtbaar. */
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:200;display:flex;align-items:center;justify-content:center;padding:20px;padding-bottom:max(20px, env(safe-area-inset-bottom, 20px))}
+  .modal-box{background:#fff;color:#222;border-radius:8px;box-shadow:0 4px 24px rgba(0,0,0,0.3);max-width:480px;width:100%;max-height:calc(100vh - 40px);max-height:calc(100dvh - 40px);display:flex;flex-direction:column;overflow:hidden}
+  .modal-head{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid #e5e5e5;background:#f4f4f4}
+  .modal-head h3{margin:0;font-size:1.05em;font-weight:600}
+  .modal-close{background:none;border:0;font-size:1.5em;line-height:1;cursor:pointer;color:#666;padding:6px 10px;min-height:36px;min-width:36px}
+  .modal-close:hover{color:#000}
+  .modal-body{flex:1 1 auto;overflow-y:auto;padding:14px;-webkit-overflow-scrolling:touch}
+  .modal-body p{margin:0 0 10px 0}
+  .modal-body .note{color:#666;font-size:0.85em;margin-top:8px}
+
+  /* QR-canvas in export-modal: vierkant en gecentreerd. Witte rand er om-
+     heen verbetert decode-kans bij goedkope scanners. */
+  .qr-display{display:flex;justify-content:center;padding:12px;background:#fff}
+  .qr-display canvas, .qr-display img{image-rendering:pixelated;background:#fff;padding:8px;max-width:100%;height:auto}
+
+  /* QR-scanner: <video> vult ruimte, status-text eronder als guide. */
+  .qr-scan-wrap{position:relative;background:#000;border-radius:4px;overflow:hidden;margin-bottom:10px}
+  .qr-scan-wrap video{display:block;width:100%;height:auto;max-height:60vh}
+  .qr-scan-status{padding:6px 10px;font-size:0.85em;color:#444;text-align:center}
+  .qr-scan-status.err{color:#c33}
+  .qr-scan-status.ok{color:#161;font-weight:600}
+
+  /* Modal-actions: sticky-footer binnen modal-box zodat ze nooit onder
+     de viewport-vouw vallen. Centreren; flex-wrap voor smalle schermen. */
+  .modal-body .modal-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:14px;padding-top:12px;border-top:1px solid #eee;position:sticky;bottom:0;background:#fff}
+  .modal-body button{padding:10px 18px;font:inherit;border:1px solid #ccc;background:#f4f4f4;border-radius:4px;cursor:pointer;min-height:44px;min-width:120px}
+  .modal-body button.primary{background:#2c5;color:#fff;border-color:#2a4}
+  .modal-body button.primary:hover{background:#1b4}
+  .modal-body button:disabled{opacity:0.5;cursor:not-allowed}
+
+  /* Mobile: modal-box mag iets hoger zijn maar nog steeds binnen safe-area. */
+  @media (max-width:767px){
+    .modal-overlay{padding:12px;padding-bottom:max(20px, env(safe-area-inset-bottom, 20px))}
+    .modal-box{max-height:calc(100dvh - 24px)}
+    .modal-head h3{font-size:1em}
+    .modal-body button{min-width:100%}  /* één-knop-per-rij op smal scherm, makkelijk te raken */
+    /* Emoji-buttons in modal blijven hun eigen min-width houden (zie .cs-emoji-row),
+       anders zou de '100%'-regel ze als één-knop-per-rij forceren. */
+    .modal-body .cs-emoji-row button{min-width:38px}
+  }
+
+  /* Profile-actions lijst in Mijn profiel-modal (v1.1.043).
+     Klikbare regels met label-links + value-rechts; hover-state voor feedback. */
+  ul.profile-actions{list-style:none;padding:0;margin:8px 0 4px 0;border:1px solid #e5e5e5;border-radius:6px;overflow:hidden}
+  ul.profile-actions li{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;border-bottom:1px solid #eee;min-height:48px}
+  ul.profile-actions li:last-child{border-bottom:none}
+  ul.profile-actions li:hover{background:#f4f4f4}
+  ul.profile-actions li:active{background:#e9e9e9}
+  ul.profile-actions .profile-action-label{font-weight:500;color:#222}
+  ul.profile-actions .profile-action-value{color:#666;font-size:0.9em;white-space:nowrap}
+
+  /* Emoji-row in callsign-modal: gridje van 8 kolommen, klikbare buttons. */
+  .cs-emoji-row{display:grid;grid-template-columns:repeat(8, 1fr);gap:4px;margin-top:6px;padding:6px;background:#f7f7f7;border-radius:4px}
+  .cs-emoji-row button.emoji-pick{padding:6px 0;font-size:1.2em;line-height:1;border:1px solid #ddd;background:#fff;border-radius:3px;cursor:pointer;min-height:36px;min-width:0}
+  .cs-emoji-row button.emoji-pick:hover{background:#eef}
+  .cs-emoji-row button.emoji-pick:active{background:#dde}
+
+  /* Repeater-sessie countdown (v1.1.046). Cijfer staat in <b id="rep-mgmt-countdown">.
+     Onder de 30s krijgt 't .cd-warn → rood + knipper zodat user weet dat
+     sessie bijna verloopt. Geen scary kleur boven 30s; gewoon monospace. */
+  .rep-cd{font-family:monospace;font-weight:bold}
+  .rep-cd.cd-warn{color:#c33;animation:cd-blink 1s steps(2, end) infinite}
+  @keyframes cd-blink{50%{opacity:0.45}}

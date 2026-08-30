@@ -18,8 +18,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import secrets
+import time as _time
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -41,17 +43,28 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 #   x = major (handmatig te bepalen)
 #   y = minor (handmatig te bepalen)
 #   z = dot-versie, bumpt bij elke door de gebruiker gevraagde wijziging
-APP_VERSION = "1.1.034"
+APP_VERSION = "1.1.048"
+
+# Module-logger; uvicorn pikt deze automatisch op via root-handlers (stdout,
+# systemd-journal, docker logs). Geen extra config nodig.
+log = logging.getLogger("meshcore.web")
 
 
 # ---------------------------------------------------------------------------
 # Config / state
 # ---------------------------------------------------------------------------
 
-# Sessies: token → {username, role, allowed_views, login_time}
-# In-memory; bij gateway-restart moet iedereen opnieuw inloggen.
+# Sessies: token → {username, role, allowed_views, last_seen, ...}
+# In-memory; bij gateway-restart moet iedereen opnieuw inloggen. Survives
+# browser-tab-close via persistent cookie (sliding 7d expiry) — zie
+# _sliding_session_cookie middleware en SESSION_MAX_AGE.
 _SESSIONS: dict[str, dict] = {}
 COOKIE_NAME = "mc_auth"
+# Sessie-levensduur (sliding). 7 dagen vanaf last_seen — elke succesvolle
+# request met geldig token refresht 'm. Server-restart wist alles. Logout
+# wist alleen die ene sessie. Bewust niet eindeloos: tab op gedeeld apparaat
+# blijft hooguit 7d na laatste gebruik open. v1.1.047.
+SESSION_MAX_AGE = 7 * 86400
 
 # OTA-repeater-management: per (web_username, repeater_pubkey_lower) een sessie
 # met login-tijd en laatste activiteit. In-memory; companion zelf vergeet de
@@ -115,6 +128,7 @@ def _new_session(user) -> str:
         "role": user.role,
         "allowed_views": views,
         "callsign": (user.callsign or "") if hasattr(user, "callsign") else "",
+        "last_seen": _time.time(),
     }
     return token
 
@@ -122,7 +136,14 @@ def _new_session(user) -> str:
 def _session(token: Optional[str]) -> Optional[dict]:
     if not token:
         return None
-    return _SESSIONS.get(token)
+    s = _SESSIONS.get(token)
+    if not s:
+        return None
+    # Sliding TTL — inactiviteit > SESSION_MAX_AGE = sessie verlopen.
+    if _time.time() - s.get("last_seen", 0) > SESSION_MAX_AGE:
+        _SESSIONS.pop(token, None)
+        return None
+    return s
 
 
 def _session_from_request(request: Request) -> Optional[dict]:
@@ -271,6 +292,42 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             _invalidate_admin_state_cache()
         return response
 
+    # Sliding session-cookie + last_seen refresh (v1.1.047). Bij elke request
+    # met een geldige sessie verlengen we het cookie-vervaldatum naar
+    # SESSION_MAX_AGE vanaf nu, zodat de browser na tab-close de sessie
+    # behoudt zolang er activiteit is. Server-side last_seen wordt geüpdatet
+    # zodat _session() de inactiviteits-expiry kan toepassen. Throttling: niet
+    # vaker dan elke 60s schrijven (UI poll't elke 10-30s; geen zin elke poll
+    # een Set-Cookie te sturen).
+    _COOKIE_REFRESH_INTERVAL_SECS = 60
+    @app.middleware("http")
+    async def _sliding_session_cookie(request: Request, call_next):
+        response = await call_next(request)
+        # Als de route zelf al iets met onze cookie deed (login/logout/setup)
+        # niet overschrijven — anders maken we de delete_cookie van /logout
+        # ongedaan.
+        for h_name, h_value in response.raw_headers:
+            if (h_name.lower() == b"set-cookie"
+                    and h_value.startswith(COOKIE_NAME.encode() + b"=")):
+                return response
+        token = request.cookies.get(COOKIE_NAME)
+        if not token:
+            return response
+        sess = _SESSIONS.get(token)
+        if not sess:
+            return response
+        now = _time.time()
+        if now - sess.get("last_seen", 0) > SESSION_MAX_AGE:
+            # Verlopen — niets refreshen, _session() haalt 'm zo wel weg
+            return response
+        if now - sess.get("last_seen", 0) < _COOKIE_REFRESH_INTERVAL_SECS:
+            # Recent al gerefresht; sla over om bandwidth/headers te sparen
+            return response
+        sess["last_seen"] = now
+        response.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax",
+                            max_age=SESSION_MAX_AGE)
+        return response
+
     # ---------- HTTP routes -----------------------------------------------
 
     @app.get("/login", response_class=HTMLResponse)
@@ -298,7 +355,8 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
         # Refresh sessie-flag must_change uit DB
         _SESSIONS[token]["must_change"] = bool(u.must_change_password)
         resp = RedirectResponse("/", status_code=303)
-        resp.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax")
+        resp.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax",
+                        max_age=SESSION_MAX_AGE)
         return resp
 
     @app.get("/setup", response_class=HTMLResponse)
@@ -325,7 +383,8 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
         u = await db.get_user(username)
         token = _new_session(u)
         resp = RedirectResponse("/", status_code=303)
-        resp.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax")
+        resp.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax",
+                        max_age=SESSION_MAX_AGE)
         return resp
 
     # /first-login is verwijderd: admin geeft tijdelijk ww + must_change=true,
@@ -374,7 +433,8 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
 
     # -------- Admin routes ------------------------------------------------
 
-    import time as _time
+    # _time staat top-level geïmporteerd sinds v1.1.048 (was hier lokaal,
+    # maar _new_session op module-niveau had 'm ook nodig).
     from fastapi import HTTPException
 
     started_at = _time.time()
@@ -854,15 +914,30 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             raise HTTPException(500, f"remove_contact faalde: {e}")
         return {"ok": True, "result": str(res), "message": f"contact {key[:12]} verwijderd"}
 
-    # Housekeeping: vergeet stale repeaters/rooms (>28d niet gezien én geen favoriet)
-    STALE_REPEATER_AGE_SECS = 28 * 86400
+    # Housekeeping: vergeet stale contacten (geen favoriet) ----------------
+    # v1.1.039: generiek — types is een set van 1 (client/companion), 2 (repeater),
+    # 3 (room), 4 (sensor). age_secs is leeftijd-drempel; favorieten worden
+    # standaard overgeslagen tenzij skip_favorites=False (favorieten gelden
+    # alleen voor repeaters/rooms in DB; clients hebben geen 'favoriet'-flag).
+    STALE_REPEATER_AGE_SECS = 28 * 86400  # default voor /admin/repeaters/* alias
 
-    async def _stale_repeater_candidates():
-        """Bouwt de lijst kandidaten op (type 2|3, geen favoriet, last_advert
-        bekend én ouder dan de drempel). Returnt list[dict] met de velden die
-        de UI nodig heeft."""
+    _TYPE_LABEL = {1: "client", 2: "repeater", 3: "room", 4: "sensor"}
+
+    async def _stale_contact_candidates(
+        age_secs: int,
+        type_set: set,
+        skip_favorites: bool = True,
+    ):
+        """Bouwt de lijst kandidaten op die voldoen aan:
+        - `contact.type in type_set`
+        - `last_advert` bekend (>0) én `now - last_advert > age_secs`
+        - niet in favorieten-lijst (alleen als `skip_favorites=True`)
+        Returnt list[dict] met de velden die de UI nodig heeft.
+        """
         contacts = getattr(mc, "contacts", None) or {}
-        favs = await db.all_fav_repeater_pubkeys()
+        favs = set()
+        if skip_favorites:
+            favs = await db.all_fav_repeater_pubkeys()
         now_ts = _time.time()
         out = []
         for pk_hex, c in contacts.items():
@@ -871,33 +946,117 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             if not isinstance(c, dict):
                 continue
             ctype = c.get("type")
-            if ctype not in (2, 3):
+            if ctype not in type_set:
                 continue
-            if pk_hex.lower() in favs:
+            if skip_favorites and pk_hex.lower() in favs:
                 continue
             last_adv = c.get("last_advert")
             if not isinstance(last_adv, (int, float)) or last_adv <= 0:
-                # Onbekend → laat staan (veiliger)
+                # Onbekend → laat staan (veiliger; geen bewijs van staleness)
                 continue
             age = now_ts - last_adv
-            if age <= STALE_REPEATER_AGE_SECS:
+            if age <= age_secs:
                 continue
             out.append({
                 "pubkey": pk_hex,
                 "pubkey_prefix": pk_hex[:12],
                 "name": c.get("adv_name") or "?",
                 "type": ctype,
-                "type_label": "repeater" if ctype == 2 else "room",
+                "type_label": _TYPE_LABEL.get(ctype, "?"),
                 "last_advert": last_adv,
                 "age_days": round(age / 86400, 1),
             })
         out.sort(key=lambda x: x["last_advert"])  # oudste eerst
         return out
 
+    def _parse_stale_params(
+        days_str: Optional[str],
+        types_str: Optional[str],
+        skip_favs_str: Optional[str],
+    ):
+        """Helper: parse query/body params naar (age_secs, type_set, skip_favs)."""
+        try:
+            days = float(days_str) if days_str is not None else 28.0
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"days moet getal zijn (gaf {days_str!r})")
+        if days < 0:
+            raise HTTPException(400, "days moet ≥ 0 zijn")
+        age_secs = int(days * 86400)
+
+        if types_str is None or types_str == "":
+            type_set = {2, 3}  # default: repeaters + rooms (legacy gedrag)
+        else:
+            try:
+                type_set = {int(t) for t in str(types_str).split(",") if t.strip()}
+            except ValueError:
+                raise HTTPException(400, f"types moet CSV van getallen zijn (gaf {types_str!r})")
+            valid = {1, 2, 3, 4}
+            if not type_set.issubset(valid):
+                raise HTTPException(400, f"types alleen {sorted(valid)} toegestaan")
+            if not type_set:
+                raise HTTPException(400, "minstens één type vereist")
+
+        if skip_favs_str is None:
+            skip_favs = True
+        else:
+            skip_favs = str(skip_favs_str).lower() in ("1", "true", "yes", "on")
+
+        return age_secs, type_set, skip_favs
+
+    # ---- Generieke endpoints (v1.1.039) --------------------------------
+    @app.get("/admin/contacts/stale")
+    async def admin_contacts_stale(
+        request: Request,
+        days: Optional[str] = "28",
+        types: Optional[str] = "2,3",
+        skip_favorites: Optional[str] = "1",
+    ):
+        _admin_or_403(request)
+        age_secs, type_set, skip_favs = _parse_stale_params(days, types, skip_favorites)
+        items = await _stale_contact_candidates(age_secs, type_set, skip_favs)
+        return {
+            "count": len(items),
+            "age_days_threshold": age_secs / 86400,
+            "types": sorted(type_set),
+            "skip_favorites": skip_favs,
+            "items": items,
+        }
+
+    @app.post("/admin/contacts/cleanup")
+    async def admin_contacts_cleanup(request: Request, payload: dict):
+        _admin_or_403(request)
+        age_secs, type_set, skip_favs = _parse_stale_params(
+            str(payload.get("days")) if payload.get("days") is not None else None,
+            payload.get("types"),
+            str(payload.get("skip_favorites")) if payload.get("skip_favorites") is not None else None,
+        )
+        fn = _resolve_cmd("remove_contact")
+        if fn is None:
+            raise HTTPException(501, "remove_contact niet beschikbaar")
+        items = await _stale_contact_candidates(age_secs, type_set, skip_favs)
+        removed, failed = [], []
+        for it in items:
+            try:
+                await fn(it["pubkey"])
+                removed.append({"pubkey_prefix": it["pubkey_prefix"], "name": it["name"], "type_label": it["type_label"]})
+            except Exception as e:  # noqa: BLE001
+                failed.append({"pubkey_prefix": it["pubkey_prefix"], "name": it["name"], "error": str(e)})
+        return {
+            "ok": True,
+            "removed_count": len(removed),
+            "failed_count": len(failed),
+            "removed": removed,
+            "failed": failed,
+            "message": f"{len(removed)} verwijderd, {len(failed)} mislukt",
+        }
+
+    # ---- Legacy aliases (v1.1.038 en eerder) ---------------------------
+    # /admin/repeaters/stale en /admin/repeaters/cleanup blijven werken met
+    # de oude default (28 dagen, repeaters+rooms, skip_favorites).
     @app.get("/admin/repeaters/stale")
     async def admin_repeaters_stale(request: Request):
         _admin_or_403(request)
-        items = await _stale_repeater_candidates()
+        items = await _stale_contact_candidates(STALE_REPEATER_AGE_SECS, {2, 3}, True)
         return {
             "count": len(items),
             "age_days_threshold": STALE_REPEATER_AGE_SECS // 86400,
@@ -910,7 +1069,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
         fn = _resolve_cmd("remove_contact")
         if fn is None:
             raise HTTPException(501, "remove_contact niet beschikbaar")
-        items = await _stale_repeater_candidates()
+        items = await _stale_contact_candidates(STALE_REPEATER_AGE_SECS, {2, 3}, True)
         removed, failed = [], []
         for it in items:
             try:
@@ -1179,41 +1338,177 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
 
     @app.get("/contacts/export")
     async def contacts_export(request: Request, key: Optional[str] = None):
-        """Geeft de hex card-data van een contact (of jezelf als key=None)."""
+        """Geeft een 'meshcore://contact/add?name=...&public_key=...&type=...'
+        URI terug — het officiële MeshCore QR-formaat (zie
+        https://docs.meshcore.io/qr_codes/). Geen `key` = eigen card.
+
+        v1.1.037: opgewaardeerd van meshcore-py's raw-hex `CONTACT_URI`-event
+        naar het officiële URL-formaat dat de Android-app ook gebruikt. We
+        bouwen de URL zelf vanuit `get_self_info` (voor eigen card) of
+        `mc.contacts` (voor andermans card) — `export_contact` SDK-call is
+        niet meer nodig hier.
+        """
         _auth_or_401(request)
-        fn = _resolve_cmd("export_contact")
-        if fn is None:
-            raise HTTPException(501, "export_contact niet beschikbaar")
-        try:
-            ev = await fn(key) if key else await fn()
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(500, f"export_contact faalde: {e}")
-        payload = getattr(ev, "payload", ev)
-        if not isinstance(payload, dict):
-            return {"ok": True, "card": str(payload)}
-        # mc kan dit als 'card' of 'data' returneren — accepteer beide
-        card = payload.get("card") or payload.get("data") or payload.get("export")
-        return {"ok": True, "card": card, "raw": payload}
+        from urllib.parse import quote as _urlquote
+
+        name = None
+        pubkey_hex = None
+        ctype = None
+
+        if key:
+            # Andermans card: zoek in mc.contacts (12-char prefix of 64-char volledig).
+            contacts = getattr(mc, "contacts", None) or {}
+            key_lc = key.lower()
+            found = None
+            for pk_hex, c in contacts.items():
+                if not isinstance(pk_hex, str):
+                    continue
+                if pk_hex.lower() == key_lc or pk_hex.lower().startswith(key_lc):
+                    found = (pk_hex, c)
+                    break
+            if found is None:
+                raise HTTPException(404, f"contact niet gevonden: {key}")
+            pk_hex, c = found
+            pubkey_hex = pk_hex.lower()
+            if isinstance(c, dict):
+                name = c.get("adv_name") or c.get("name")
+                ctype = c.get("type")
+            ctype = ctype if isinstance(ctype, int) else 1
+        else:
+            # Eigen card.
+            info = await _read_self_info() or {}
+            name = info.get("name") or info.get("adv_name")
+            pubkey_hex = (info.get("public_key") or info.get("pubkey") or "")
+            if isinstance(pubkey_hex, (bytes, bytearray)):
+                pubkey_hex = pubkey_hex.hex()
+            pubkey_hex = (pubkey_hex or "").lower()
+            ctype = 1  # eigen node = companion
+
+        if not name or not pubkey_hex:
+            log.warning(
+                "contacts_export: ontbrekende velden voor card "
+                "(name=%r, pubkey_hex_len=%d, key=%r)",
+                name, len(pubkey_hex or ""), key,
+            )
+            raise HTTPException(
+                500, "naam of public_key ontbreekt — companion nog niet gereed?"
+            )
+        if len(pubkey_hex) != 64:
+            log.warning(
+                "contacts_export: pubkey-lengte %d (verwacht 64) — companion-data "
+                "vermoedelijk afwijkend: %r", len(pubkey_hex), pubkey_hex[:16],
+            )
+
+        uri = (
+            "meshcore://contact/add"
+            f"?name={_urlquote(name, safe='')}"
+            f"&public_key={pubkey_hex}"
+            f"&type={int(ctype)}"
+        )
+        return {
+            "ok": True, "uri": uri,
+            "name": name, "public_key": pubkey_hex, "type": ctype,
+        }
 
     @app.post("/contacts/import")
     async def contacts_import(request: Request, payload: dict):
+        """Importeer een contact in de companion.
+
+        Twee ondersteunde input-formaten:
+
+        1. Officieel MeshCore URL-formaat (Android-app, v1.1.037+):
+             `meshcore://contact/add?name=<...>&public_key=<64hex>&type=<int>`
+           → parse de query-params, bouw een minimale contact-dict en gebruik
+             `add_contact()` (= `update_contact()` met nieuwe contact).
+
+        2. Legacy raw-hex (v1.1.036 en eerder):
+             `meshcore://<rawhex>` of een blote hex-string.
+           → `import_contact(bytes.fromhex(...))`. Vereist een meshcore-py-native
+             card; werkt alleen tussen onze eigen clients (geen Android-interop).
+
+        Returnt `{ok, name, public_key, type, message}` zodat de client de
+        nieuwe contact óók in `/my/contacts` kan opslaan (auto-add-flow in UI).
+        """
         _admin_or_403(request)
-        card = (payload.get("card") or "").strip()
-        if not card:
-            raise HTTPException(400, "card (hex) vereist")
-        # Probeer hex-string, anders raw bytes
+        raw = (payload.get("uri") or payload.get("card") or "").strip()
+        if not raw:
+            raise HTTPException(400, "uri of card vereist")
+
+        # --- Formaat 1: officieel URL met query-params ----------------------
+        if raw.lower().startswith("meshcore://contact/add"):
+            from urllib.parse import urlparse, parse_qs
+            try:
+                u = urlparse(raw)
+                params = parse_qs(u.query, keep_blank_values=False)
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(400, f"URL kon niet geparsed worden: {e}")
+            name = (params.get("name") or [""])[0]
+            pubkey_hex = (params.get("public_key") or [""])[0].lower()
+            ctype_raw = (params.get("type") or ["1"])[0]
+            if not name:
+                raise HTTPException(400, "name ontbreekt in URL")
+            if len(pubkey_hex) != 64 or any(c not in "0123456789abcdef" for c in pubkey_hex):
+                raise HTTPException(400, f"public_key moet 64 hex chars zijn (gaf {len(pubkey_hex)})")
+            try:
+                ctype = int(ctype_raw)
+            except ValueError:
+                raise HTTPException(400, f"type moet integer zijn (gaf {ctype_raw!r})")
+
+            # Minimale contact-dict voor `add_contact()`. out_path_len=-1 betekent
+            # "geen pad bekend, flood" — companion zal eerste advert afwachten om
+            # routing te leren. Andere velden zijn defaults; companion vult later
+            # aan bij ontvangst van adverts van deze pubkey.
+            contact = {
+                "public_key": pubkey_hex,
+                "type": ctype,
+                "flags": 0,
+                "out_path": "",
+                "out_path_len": -1,
+                "out_path_hash_mode": 0,
+                "adv_name": name,
+                "last_advert": 0,
+                "adv_lat": 0.0,
+                "adv_lon": 0.0,
+            }
+            fn = _resolve_cmd("add_contact", "update_contact")
+            if fn is None:
+                raise HTTPException(501, "add_contact niet beschikbaar in deze meshcore versie")
+            try:
+                res = await fn(contact)
+            except Exception as e:  # noqa: BLE001
+                log.exception("add_contact faalde")
+                raise HTTPException(500, f"add_contact faalde: {e}")
+            ev_type = getattr(getattr(res, "type", None), "name", "")
+            if ev_type == "ERROR":
+                log.warning("add_contact ERROR event: payload=%r", getattr(res, "payload", res))
+                raise HTTPException(500, f"companion: {getattr(res, 'payload', 'unknown')}")
+            return {
+                "ok": True, "name": name, "public_key": pubkey_hex, "type": ctype,
+                "message": f"Contact '{name}' geïmporteerd",
+            }
+
+        # --- Formaat 2: legacy raw-hex (eventueel met meshcore:// prefix) ---
+        hex_card = raw
+        if hex_card.lower().startswith("meshcore://"):
+            hex_card = hex_card[len("meshcore://"):]
         try:
-            card_data = bytes.fromhex(card)
+            card_bytes = bytes.fromhex(hex_card)
         except ValueError:
-            raise HTTPException(400, "card moet hex zijn")
+            raise HTTPException(
+                400,
+                "geen herkenbaar formaat (verwacht 'meshcore://contact/add?...' of raw hex)",
+            )
         fn = _resolve_cmd("import_contact")
         if fn is None:
             raise HTTPException(501, "import_contact niet beschikbaar")
         try:
-            res = await fn(card_data)
+            res = await fn(card_bytes)
         except Exception as e:  # noqa: BLE001
+            log.exception("import_contact faalde")
             raise HTTPException(500, f"import_contact faalde: {e}")
-        return {"ok": True, "result": str(res), "message": "contact geïmporteerd"}
+        # Legacy heeft geen name/pubkey-info in de respons — frontend valt
+        # voor /my/contacts/add terug op een handmatige naam-prompt.
+        return {"ok": True, "result": str(res), "message": "contact geïmporteerd (legacy formaat)"}
 
     # ---------- Change password (eigen) ----------------------------------
 
@@ -1437,6 +1732,56 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             raise HTTPException(500, f"set_radio faalde: {e}")
         return {"ok": True, "result": str(res), "message": "radio gezet — reboot vereist"}
 
+    @app.get("/admin/radio/default-scope")
+    async def admin_get_default_scope(request: Request):
+        """Lees de companion-wide default flood-scope.
+        Per-kanaal scope (zie /admin/channels/scope) overrulet deze. Bron is
+        de companion zelf (SDK: get_default_flood_scope); we tonen ook de
+        gateway-cache zodat de UI bij read-faal toch een ge-cachte waarde ziet."""
+        _admin_or_403(request)
+        cached = getattr(gateway_state, "default_scope", None)
+        fn = _resolve_cmd("get_default_flood_scope")
+        if fn is None:
+            return {"ok": True, "supported": False,
+                    "scope_name": cached or "",
+                    "message": "firmware/SDK kent geen get_default_flood_scope"}
+        try:
+            ev = await asyncio.wait_for(fn(), timeout=2.0)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": True, "supported": True,
+                    "scope_name": cached or "",
+                    "error": f"read faalde: {e}"}
+        payload = getattr(ev, "payload", ev) if not isinstance(ev, dict) else ev
+        name = ((payload or {}).get("scope_name") or "").strip()
+        gateway_state.default_scope = name or None
+        return {"ok": True, "supported": True,
+                "scope_name": name,
+                "scope_key": (payload or {}).get("scope_key", "")}
+
+    @app.post("/admin/radio/default-scope")
+    async def admin_set_default_scope(request: Request, payload: dict):
+        """Zet de companion-wide default flood-scope. Leeg = uit.
+        Updatet meteen de gateway-cache (state.default_scope) zodat
+        _apply_channel_scope direct met de nieuwe default werkt."""
+        _admin_or_403(request)
+        scope_raw = (payload.get("scope") or "").strip()
+        scope = scope_raw if scope_raw else None
+        fn = _resolve_cmd("set_default_flood_scope")
+        if fn is None:
+            raise HTTPException(501, "firmware/SDK kent geen set_default_flood_scope")
+        try:
+            res = await fn(scope)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(500, f"set_default_flood_scope faalde: {e}")
+        gateway_state.default_scope = scope
+        # last_scope-cache invalideren zodat de eerstvolgende send opnieuw
+        # set_flood_scope aanroept (effectief = de nieuwe default of de
+        # eigen channel-scope).
+        gateway_state.last_scope = "__unset__"
+        return {"ok": True, "result": str(res),
+                "scope_name": scope or "",
+                "message": f"default scope → {scope or '(geen)'}"}
+
     @app.post("/admin/txpower")
     async def admin_txpower(request: Request, payload: dict):
         _auth_or_401(request)
@@ -1656,6 +2001,104 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             raise HTTPException(400, "Public channel kan niet verwijderd worden")
         ok = await db.delete_channel(slot)
         return {"ok": ok, "message": "verwijderd uit DB-metadata" if ok else "niet gevonden"}
+
+    # ---------- Channel QR import/export (v1.1.037) ----------------------
+    # Officieel formaat (docs.meshcore.io/qr_codes/):
+    #   meshcore://channel/add?name=<urlencoded>&secret=<32hex>
+    # Geldt zowel voor de Android-app als voor onze web-client.
+    @app.get("/admin/channels/{idx}/export")
+    async def admin_channel_export(request: Request, idx: int):
+        """Bouw 'meshcore://channel/add?name=...&secret=<32hex>' voor private slot."""
+        _admin_or_403(request)
+        if idx < 1 or idx > 7:
+            raise HTTPException(400, "slot moet 1-7 zijn (slot 0 = Public, geen secret)")
+        fn = _resolve_cmd("get_channel")
+        if fn is None:
+            raise HTTPException(501, "get_channel niet beschikbaar")
+        try:
+            ev = await fn(idx)
+        except Exception as e:  # noqa: BLE001
+            log.exception("get_channel faalde")
+            raise HTTPException(500, f"get_channel faalde: {e}")
+        ev_type = getattr(getattr(ev, "type", None), "name", "")
+        if ev_type == "ERROR":
+            log.warning("get_channel ERROR event: payload=%r", getattr(ev, "payload", ev))
+            raise HTTPException(500, "companion gaf ERROR")
+        payload = getattr(ev, "payload", ev)
+        if not isinstance(payload, dict):
+            raise HTTPException(500, f"onverwachte payload-type: {type(payload).__name__}")
+        name = payload.get("channel_name") or ""
+        secret = payload.get("channel_secret") or b""
+        if isinstance(secret, (bytes, bytearray)):
+            secret_hex = secret.hex()
+        else:
+            secret_hex = str(secret)
+        if not name or len(secret_hex) != 32:
+            raise HTTPException(500, f"channel-data incomplete (name={name!r}, secret_len={len(secret_hex)})")
+        from urllib.parse import quote as _urlquote
+        uri = (
+            "meshcore://channel/add"
+            f"?name={_urlquote(name, safe='')}"
+            f"&secret={secret_hex}"
+        )
+        return {"ok": True, "uri": uri, "slot": idx, "name": name, "secret": secret_hex}
+
+    @app.post("/admin/channels/import")
+    async def admin_channels_import(request: Request, payload: dict):
+        """Importeer een channel via 'meshcore://channel/add?name=...&secret=<32hex>' URI.
+
+        Vindt het eerst beschikbare slot (1-7), gebruikt `set_channel`, en
+        spiegelt naar DB als `private`. Faalt met 409 als alle slots vol zijn.
+        """
+        _admin_or_403(request)
+        raw = (payload.get("uri") or "").strip()
+        if not raw:
+            raise HTTPException(400, "uri vereist")
+        if not raw.lower().startswith("meshcore://channel/add"):
+            raise HTTPException(400, "uri moet 'meshcore://channel/add?...' zijn")
+        from urllib.parse import urlparse, parse_qs
+        try:
+            u = urlparse(raw)
+            params = parse_qs(u.query, keep_blank_values=False)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(400, f"URL parse faalde: {e}")
+        name = (params.get("name") or [""])[0]
+        secret_hex = (params.get("secret") or [""])[0].lower()
+        if not name:
+            raise HTTPException(400, "name ontbreekt in URL")
+        if len(secret_hex) != 32 or any(c not in "0123456789abcdef" for c in secret_hex):
+            raise HTTPException(400, f"secret moet 32 hex chars (16 bytes) zijn (gaf {len(secret_hex)})")
+        try:
+            secret_bytes = bytes.fromhex(secret_hex)
+        except ValueError:
+            raise HTTPException(400, "secret is geen geldige hex")
+
+        # Voorkom dubbele import (zelfde secret op een ander slot zou werken maar
+        # spamt slots vol — check eerst).
+        existing = await db.list_channels()
+        slot = _next_free_slot(existing)
+        if slot is None:
+            raise HTTPException(409, "alle slots 1-7 zijn in gebruik — verwijder eerst een kanaal")
+
+        # Zet op companion
+        try:
+            res = await _set_channel_on_node(slot, name, secret_bytes)
+        except HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            log.exception("set_channel faalde tijdens channel-import")
+            raise HTTPException(500, f"set_channel faalde: {e}")
+        # DB-spiegel: altijd 'private' bij import (alleen private hebben gedeelde
+        # secret-key; hashtag is naam-derived en heeft geen QR-flow nodig).
+        await db.upsert_channel(
+            slot, name=name, has_key=True, is_public=False, kind="private",
+        )
+        return {
+            "ok": True, "slot": slot, "name": name,
+            "secret": secret_hex,
+            "result": str(res),
+            "message": f"Privé-kanaal '{name}' geïmporteerd op slot {slot}",
+        }
 
     @app.get("/admin/clean/preview")
     async def admin_clean_preview(request: Request, seconds: int):

@@ -167,7 +167,16 @@ async function runServerSearch(q){
    Heuristiek: naam = alles tot eerste ':', max 64 chars, mag spaties bevatten,
    geen newlines, geen URL-achtige patronen ('://'). */
 function extractSender(m){
-  if (m.peer && m.peer !== '?' && m.peer !== 'self') return m.peer;
+  if (m.peer && m.peer !== '?' && m.peer !== 'self') {
+    // DM: m.peer is een 12-char pubkey-prefix; lookup de adv_name uit
+    // STATE.myContacts of STATE.contacts. Fallback: prefix zelf (huidig
+    // gedrag pre-v1.1.040).
+    if (m.kind === 'dm') {
+      const nm = _resolveContactName(m.peer);
+      if (nm) return nm;
+    }
+    return m.peer;
+  }
   const t = m.text || '';
   if (!t) return null;
   // Vermijd URLs: 'http://...' zou anders 'http' als naam pakken

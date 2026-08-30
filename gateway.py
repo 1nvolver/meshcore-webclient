@@ -55,6 +55,13 @@ class GatewayState:
     self_name: Optional[str] = None
     # Sentinel-string zodat 'last_scope is None' = bewust geen scope
     last_scope: object = "__unset__"
+    # Companion-wide default flood-scope (None = geen default). Wordt bij
+    # connect uit de companion gelezen via get_default_flood_scope en
+    # geüpdate via /admin/radio/default-scope. _apply_channel_scope valt
+    # hierop terug als een kanaal geen eigen scope heeft, zodat 't gedrag
+    # deterministisch is ipv afhankelijk van firmware-interpretatie van
+    # set_flood_scope(None). Per-kanaal scope overrulet deze default.
+    default_scope: Optional[str] = None
     # True als watchdog een proces-restart heeft aangevraagd (USB stil >X min);
     # main() leest dit en exit met code 75 zodat supervisor (systemd/docker)
     # opnieuw start.
@@ -344,12 +351,20 @@ async def send_dm(mc, prefix: str, text: str):
 
 async def _apply_channel_scope(mc, channel_idx: int) -> None:
     """Lees scope uit DB voor het kanaal en pas 'm toe via set_flood_scope.
-    Cache de laatst-gezet scope om onnodige USB-traffic te voorkomen."""
+    Cache de laatst-gezet scope om onnodige USB-traffic te voorkomen.
+
+    Fallback (v1.1.045): als het kanaal géén eigen scope heeft, valt 't terug
+    op state.default_scope (de companion-wide default). Daardoor is 't gedrag
+    voorspelbaar — channel scope overrulet default, geen channel scope =
+    default geldt — onafhankelijk van hoe de firmware set_flood_scope(None)
+    interpreteert.
+    """
     try:
         ch = await db.get_channel(channel_idx)
     except Exception:  # noqa: BLE001
         return
-    desired = (ch.scope if ch and ch.scope else None)
+    ch_scope = (ch.scope if ch and ch.scope else None)
+    desired = ch_scope if ch_scope else getattr(state, "default_scope", None)
     if getattr(state, "last_scope", "__unset__") == desired:
         return  # niet veranderd, niets doen
     fn = getattr(getattr(mc, "commands", None), "set_flood_scope", None)
@@ -819,6 +834,28 @@ async def load_self_info(mc) -> None:
         state.self_name = str(name)
     if state.self_pubkey or state.self_name:
         print(f"[*] self: name={state.self_name!r} pubkey_prefix={state.self_pubkey}")
+
+
+async def load_default_scope(mc) -> None:
+    """Vul state.default_scope vanuit de companion. Best-effort: bij niet-
+    ondersteunde firmware of timeout blijft default_scope op None staan."""
+    cmds = getattr(mc, "commands", None)
+    if cmds is None:
+        return
+    fn = getattr(cmds, "get_default_flood_scope", None)
+    if not callable(fn):
+        return  # SDK/firmware zonder default-scope support
+    try:
+        ev = await asyncio.wait_for(fn(), timeout=2.0)
+    except Exception as e:  # noqa: BLE001
+        print(f"[!] get_default_flood_scope faalde: {e}")
+        return
+    payload = getattr(ev, "payload", ev) if not isinstance(ev, dict) else ev
+    name = (payload or {}).get("scope_name") or ""
+    name = name.strip() or None
+    state.default_scope = name
+    if name:
+        print(f"[*] default flood-scope: {name}")
 
 
 async def watchdog(mc, stop: asyncio.Event) -> None:
@@ -1540,6 +1577,7 @@ async def main() -> int:
     print("[*] verbonden.")
     await print_status(mc)
     await load_self_info(mc)
+    await load_default_scope(mc)
 
     # Zet decrypt-channel-logs aan: koppelt RX_LOG_DATA (raw RF-metadata)
     # aan inkomende channel-msgs zodat 'path', 'RSSI', 'SNR' en 'attempt'

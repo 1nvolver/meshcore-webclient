@@ -316,3 +316,79 @@ function setThreadingEnabled(on){
   try { localStorage.setItem('threading_on', on ? '1' : '0'); } catch(e){}
 }
 
+/* ============== generic modal (v1.1.041) ==============
+   Eén modal tegelijk; ESC en backdrop-klik sluiten. Eerder leefden deze
+   helpers als `_qrOpenModal`/`_qrCloseModal` in `08-qr.js`; sinds v1.1.041
+   gepromoveerd naar 01-core.js zodat ze ook door andere views gebruikt
+   kunnen worden (callsign-modal, toekomstige confirm-dialogs, etc.).
+   CSS-klassen `.modal-overlay`, `.modal-box`, `.modal-head`, `.modal-body`,
+   `.modal-actions` staan in app.css.
+*/
+let _modalEl = null;
+let _modalKeyHandler = null;
+let _modalCloseCb = null;  // optioneel: callback bij sluiten (voor cleanup zoals stoppen camera-stream)
+
+function closeModal(){
+  if (typeof _modalCloseCb === 'function') {
+    try { _modalCloseCb(); } catch(e) {}
+  }
+  _modalCloseCb = null;
+  if (_modalEl && _modalEl.parentNode) {
+    _modalEl.parentNode.removeChild(_modalEl);
+  }
+  _modalEl = null;
+  if (_modalKeyHandler) {
+    document.removeEventListener('keydown', _modalKeyHandler);
+    _modalKeyHandler = null;
+  }
+}
+
+function openModal(title, bodyHTML, onClose){
+  closeModal();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML =
+    '<div class="modal-box" onclick="event.stopPropagation()">' +
+      '<div class="modal-head">' +
+        '<h3>' + escapeHTML(title) + '</h3>' +
+        '<button class="modal-close" type="button" aria-label="sluiten" onclick="closeModal()">&times;</button>' +
+      '</div>' +
+      '<div class="modal-body" id="modal-body">' + bodyHTML + '</div>' +
+    '</div>';
+  overlay.addEventListener('click', closeModal);
+  document.body.appendChild(overlay);
+  _modalEl = overlay;
+  _modalCloseCb = typeof onClose === 'function' ? onClose : null;
+  _modalKeyHandler = function(e){ if (e.key === 'Escape') closeModal(); };
+  document.addEventListener('keydown', _modalKeyHandler);
+  return overlay;
+}
+
+/* ============== contact-name lookup ==============
+   Voor DM's geeft de companion een 12-char pubkey-prefix als 'peer'. Voor de
+   UI willen we de naam tonen. We zoeken eerst in STATE.myContacts (per-user
+   opgeslagen) en daarna in STATE.contacts (companion-bekend) op exacte 12-char
+   match. Returnt null als niet gevonden zodat callers naar prefix kunnen
+   fallback'en.
+*/
+function _resolveContactName(prefix){
+  if (!prefix || typeof prefix !== 'string') return null;
+  const px = prefix.toLowerCase();
+  // 1) Per-user opgeslagen contactpersonen — verwacht zowel pubkey (vol) als
+  //    pubkey_prefix te bevatten; matchen op prefix is veilig.
+  const my = STATE.myContacts || [];
+  for (const c of my) {
+    if (!c) continue;
+    if (c.pubkey_prefix && c.pubkey_prefix.toLowerCase() === px) return c.name || null;
+    if (c.pubkey && c.pubkey.toLowerCase().startsWith(px)) return c.name || null;
+  }
+  // 2) Companion-bekende contacten.
+  const cs = STATE.contacts || [];
+  for (const c of cs) {
+    if (!c) continue;
+    if (c.pubkey_prefix && c.pubkey_prefix.toLowerCase() === px) return c.name || null;
+    if (c.pubkey && c.pubkey.toLowerCase().startsWith(px)) return c.name || null;
+  }
+  return null;
+}
+
