@@ -1,7 +1,9 @@
 # Handoff — MeshCore Gateway Web Client
 
 Stand: versie 1.1.049. Deze notitie is bedoeld om het project in een nieuwe
-AI-/dev-omgeving te kunnen voortzetten. De broncode-bestanden gaan apart mee.
+AI-/dev-omgeving te kunnen voortzetten. De broncode staat in
+`github.com/1nvolver/meshcore-webclient` (branch `main`) — clone die repo,
+dan heb je alles. Voor de draaiende omgeving zie sectie 9.
 
 > **Voor per-versie wijzigingen / changelog** zie `CHANGELOG.md`. Dit bestand
 > is een referentie-doc (architectuur, schema, voltooide features, caveats,
@@ -172,8 +174,12 @@ vereist op enkele plekken conversie.
   client-side TTL-hint 120s. Logout via `send_logout`. CLI-responses
   worden weggevangen uit `on_contact_msg` op basis van `txt_type ≠ 0` zodat
   ze niet als DM in de historie belanden.
-- **Deployment**: Docker + docker-compose + systemd-template; `--reset-admin`
-  is een one-shot zonder USB-claim.
+- **Deployment** (v1.1.049 omgezet naar containers): GitHub Actions bouwt en
+  pusht naar GHCR, Portainer pullt. Zie sectie 9 voor de draaiende omgeving.
+  `docker-compose.yml` is nog puur lokaal bouwen/testen; het
+  systemd-template blijft bestaan voor een native installatie.
+  `--reset-admin` is een one-shot zonder USB-claim (ook in de container:
+  `docker compose run --rm gateway python gateway.py --reset-admin`).
 - **Callsign per user** (v1.1.031): self-serve via avatar-menu, 1-3+ tekens of
   emoji. Wordt als `[CS] ` voor uitgaande berichten geprependt. Optioneel —
   leeg = uit. Sessie-sync zodat verandering meteen werkt zonder her-login.
@@ -357,10 +363,15 @@ nieuwe `APP_VERSION` ook echt in `HANDOFF.md` staat. Vergeet je die sync, dan
 faalt de build — bewust, want de versie-string is de enige koppeling tussen
 image-tag, cache-buster en docs.
 
-**Update-procedure op een productie-Pi:** zie `README.md` sectie "Updates /
-nieuwe versie deployen" — kort: DB-backup (`cp meshcore.db meshcore.db.bak`)
-→ code pullen → service restart → schema-migratie loopt automatisch. Hard
-refresh meestal niet nodig dankzij cache-buster.
+**Deploy-procedure (container, sinds v1.1.049):** push naar `main` → CI draait
+de checks en pusht het image → Portainer *Pull and redeploy*. DB-backup vooraf
+(zie `README.md`, sectie "Draaien op Portainer"), want schema-migraties zijn
+forward-only. Migratie loopt automatisch bij startup; hard refresh is niet
+nodig dankzij de cache-buster.
+
+**Native installatie** (systemd, zonder container): de oude procedure staat nog
+in `README.md` sectie "Updates / nieuwe versie deployen" — DB-backup → code
+pullen → service restart.
 
 ---
 
@@ -383,20 +394,63 @@ refresh meestal niet nodig dankzij cache-buster.
 2. Telemetry-paneel via `req_telemetry_sync` (LPP-decoded).
 3. ~~Sessie-keepalive of zichtbare countdown van repeater-login.~~ (v1.1.046 — zichtbare countdown + expliciete verleng-knop. Auto-keepalive bewust niet — USB-traffic + onzekere firmware-TTL.)
 
+**Container / CI (alleen bij trigger):**
+4. **arm64 erbij** als er ooit een Pi als target komt: in
+   `.github/workflows/ci.yml` bij de build-stap `platforms: linux/amd64`
+   uitbreiden naar `linux/amd64,linux/arm64`. Kost fors meer buildtijd
+   (QEMU-emulatie), daarom nu bewust alleen amd64.
+5. **Image-size**: de `python:3.12-slim` + pip-install laag is ~250MB. Een
+   multi-stage build met `--user`-installs zou dat kunnen halveren; niet
+   gedaan want irrelevant bij een pull per paar weken.
+
 **Onderhoud / robuustheid (alleen bij trigger):**
-4. Smoke-tests voor `db.py`-helpers, password-hashing, schema-migraties —
+6. Smoke-tests voor `db.py`-helpers, password-hashing, schema-migraties —
    pas relevant bij grotere schema-wijziging.
-5. Threading-performance: huidige `isInThread` is O(N) per check (lineaire
+7. Threading-performance: huidige `isInThread` is O(N) per check (lineaire
    scan in `STATE.msgs`). Voor typische 30-100 msgs prima; bij 1000+ in
    één view zou een hash-map met parent-lookup nodig zijn.
 
 **Laag — alleen bij groei / minder vertrouwd netwerk:**
-6. CSRF-tokens op admin-POSTs, rate-limiting op `/login`, persistente sessies.
+8. CSRF-tokens op admin-POSTs, rate-limiting op `/login`, persistente sessies.
+   Extra relevant nu de app op een altijd-draaiende server staat in plaats van
+   een laptop.
 
 **Mogelijk overbodig (overwegen op te ruimen):**
-7. `User.allowed_views`-kolom (zie sectie 6). Sinds Repeaters in Admin staat
+9. `User.allowed_views`-kolom (zie sectie 6). Sinds Repeaters in Admin staat
     is er geen use-case meer; kolom kost niets maar verwart toekomstige
     lezers. Drop via een migratie kost ~10 minuten.
+
+---
+
+---
+
+## 9. Draaiende omgeving (sinds 2026-08-30)
+
+| | |
+|---|---|
+| **Werkmap** | `~/Library/CloudStorage/OneDrive-Flight815B.V/Development/Python/Meshcore/WebClient` (OneDrive) |
+| **Repo** | `github.com/1nvolver/meshcore-webclient`, publiek, één branch `main` |
+| **Registry** | `ghcr.io/1nvolver/meshcore-webclient` — package publiek, Portainer logt niet in |
+| **Host** | `homeserver`, x86/amd64, Docker + Portainer |
+| **Stack** | `meshcore-gateway`, compose = `portainer-stack.yml` |
+| **UI** | `http://homeserver:8180/` — host-poort 8180 → container-poort 8080 (8080 was op die host al bezet) |
+| **USB** | `/dev/ttyACM0`, `root:dialout`, dialout-GID 20 → `group_add: ["20"]` |
+| **Data** | named volume `meshcore-data` → `/data/meshcore.db` |
+
+Aandachtspunten bij deze omgeving:
+
+- **De productie-DB is leeg begonnen.** De `meshcore.db` in de werkmap is
+  lokale dev-historie en is bewust niet meegemigreerd. Wil je 'm alsnog
+  overzetten: zie `README.md`, "Data, backup en de database".
+- **De DB staat niet in git en niet in het image** — `*.db` staat in zowel
+  `.gitignore` als `.dockerignore`, en er is nooit een `.db` gecommit
+  (gecontroleerd met `git log --all -- '*.db'`). Houd dat zo: er zitten
+  berichten, contacten en wachtwoord-hashes in.
+- **Alleen `linux/amd64` wordt gebouwd.** Een Pi als target vereist de
+  `platforms:`-uitbreiding uit sectie 8 item 4, of een lokale build.
+- **De werkmap hierboven is de enige geldige.** Een eerdere locatie op een
+  andere cloud-drive is vervallen; die komt in geen enkel actueel bestand meer
+  voor. Kom je 'm ergens tegen in oude commit-diffs, negeer 'm.
 
 ---
 
