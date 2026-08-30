@@ -198,12 +198,243 @@ docker compose logs -f gateway
 
 ---
 
-## Deploy via GitHub Actions → GHCR → Portainer
+## Draaien op Portainer (kant-en-klaar image)
 
-De productie-route is: push naar `main` → GitHub Actions draait de checks en
-bouwt het image → image komt op GHCR → Portainer pullt 'm.
+Je hoeft niets te bouwen. GitHub Actions publiceert bij elke push naar `main`
+een kant-en-klaar image op GHCR:
 
-### 1. GitHub Actions
+```
+ghcr.io/1nvolver/meshcore-webclient:latest
+```
+
+Het package is publiek, dus Portainer hoeft **niet** op een registry in te
+loggen.
+
+**Wat je nodig hebt:**
+
+- Een **Linux**-host met Docker + Portainer. USB-passthrough werkt niet op
+  Docker Desktop voor macOS/Windows — die draaien in een VM die host-USB niet
+  doorgeeft.
+- Een MeshCore companion-radio (bv. Seeed XIAO nRF52840, companion-firmware)
+  via USB aangesloten op die host.
+- Architectuur `linux/amd64`. Voor een Raspberry Pi: zie [Andere
+  architectuur](#andere-architectuur-raspberry-pi--arm64) onderaan.
+
+### Stap 1 — het juiste USB-device vinden
+
+Sluit de radio aan en kijk wat het systeem ziet:
+
+```bash
+dmesg | tail -20                              # wat is er net aangesloten?
+ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null   # welke serial-devices zijn er?
+```
+
+Een typische regel ziet er zo uit:
+
+```
+crw-rw---- 1 root dialout 166, 0 Aug 30 14:48 /dev/ttyACM0
+```
+
+Daar haal je twee dingen uit:
+
+| Uit de regel | Voorbeeld | Waar het straks in de stack komt |
+|---|---|---|
+| het **pad** | `/dev/ttyACM0` | links in `devices:` |
+| de **groep** | `dialout` | de GID daarvan komt in `group_add:` |
+
+De `rw` in het midden (`crw-rw----`) betekent dat de groep lees/schrijf mag —
+precies wat we nodig hebben. Zoek nu het groepsnúmmer op, want een container
+kent alleen nummers:
+
+```bash
+getent group dialout
+# dialout:x:20:     ← de 20 is wat je nodig hebt
+```
+
+Op Debian, Ubuntu en Raspberry Pi OS is dat vrijwel altijd `20`. Op andere
+distro's (Arch: `uucp`, Fedora: `dialout` maar soms een andere GID) kan het
+afwijken — vandaar dat je 't checkt.
+
+**Meerdere serial-devices en je weet niet welke de radio is?** Trek 'm eruit,
+draai `ls -l /dev/ttyACM* /dev/ttyUSB*` opnieuw, steek 'm terug: het pad dat
+verdwijnt en terugkomt is de jouwe. Of gebruik de by-id-namen, die zeggen
+meteen wélk apparaat het is:
+
+```bash
+ls -l /dev/serial/by-id/
+# usb-Seeed_XIAO_nRF52840_...-if00 -> ../../ttyACM0
+```
+
+Dat by-id-pad is bovendien **stabieler**: `/dev/ttyACM0` kan `ttyACM1` worden
+als er een tweede USB-serieel bijkomt of na een replug. Wil je dat gebruiken,
+zet het by-id-pad dan links in `devices:` en houd rechts `/dev/ttyACM0`:
+
+```yaml
+    devices:
+      - "/dev/serial/by-id/usb-Seeed_XIAO_nRF52840_XXXX-if00:/dev/ttyACM0"
+```
+
+Docker resolvet die symlink bij containerstart. Let op: na fysiek los- en
+weer vastkoppelen moet de container herstarten om het nieuwe device te
+pakken — `restart: unless-stopped` doet dat niet vanzelf, want de container
+crasht niet.
+
+### Stap 2 — een vrije host-poort kiezen
+
+De app luistert **binnen** de container altijd op 8080. Welke poort je op de
+host gebruikt, bepaal je zelf. Check of 'ie vrij is:
+
+```bash
+ss -ltnp | grep ':8180'      # geen output = vrij
+```
+
+In het voorbeeld hieronder is dat `8180`, omdat 8080 op deze host al bezet was.
+
+### Stap 3 — de stack aanmaken
+
+Portainer → **Stacks** → *Add stack* → naam `meshcore-gateway` → *Web editor* →
+onderstaande compose plakken. Pas `8180`, `/dev/ttyACM0` en de `20` aan naar
+wat jij in stap 1 en 2 gevonden hebt.
+
+```yaml
+services:
+  gateway:
+    image: ghcr.io/1nvolver/meshcore-webclient:${MESHCORE_TAG:-latest}
+    container_name: meshcore-gateway
+    restart: unless-stopped
+
+    ports:
+      # host:container — links jouw vrije poort, rechts altijd 8080
+      - "8180:8080"
+
+    devices:
+      # links het pad op de host (stap 1), rechts het pad in de container
+      - "/dev/ttyACM0:/dev/ttyACM0"
+
+    group_add:
+      # GID van de groep waar het device van is (stap 1). Debian/Ubuntu/Pi = 20.
+      # Dit is de nette manier — géén privileged: true nodig.
+      - "20"
+
+    volumes:
+      - meshcore-data:/data
+
+    environment:
+      # Moet matchen met de RECHTERkant van 'devices' hierboven.
+      MESHCORE_PORT: /dev/ttyACM0
+      TZ: Europe/Amsterdam
+      # MESHCORE_BAUD: "115200"
+      # MESHCORE_DEBUG: "1"
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 25s
+      retries: 3
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  meshcore-data:
+    name: meshcore-data
+```
+
+Dit bestand staat ook als `portainer-stack.yml` in de repo.
+
+Wil je een vaste versie draaien in plaats van `latest`, zet dan onderaan het
+stack-formulier bij *Environment variables* een variabele `MESHCORE_TAG` met
+bijvoorbeeld `1.1.049`. Aanrader voor productie: dan bepaal jij wanneer je
+update, in plaats van "wat er toevallig als latest staat".
+
+### Stap 4 — deployen en eerste login
+
+Klik **Deploy the stack**. Portainer pullt het image en start de container.
+Na ~25 seconden hoort de status *healthy* te zijn (de ingebouwde healthcheck
+pollt `/healthz`).
+
+Open daarna `http://<host-ip>:8180/`. De allereerste bezoeker komt automatisch
+op `/setup` om de admin-account aan te maken. Daarna: Admin → Radio om de
+companion-instellingen te controleren.
+
+Check de logs als er iets niet goed gaat: Portainer → Containers →
+`meshcore-gateway` → *Logs*. Bij het opstarten hoort er een regel te staan dat
+de companion-handshake gelukt is.
+
+### Data, backup en de database
+
+De SQLite-database komt in het named volume `meshcore-data` te staan, als
+`/data/meshcore.db`. Dat volume overleeft een redeploy en een image-update.
+
+> **De database zit bewust niet in de repo en niet in het image.** `*.db` staat
+> in `.gitignore` en in `.dockerignore`, en er is nooit een `.db` gecommit —
+> de DB bevat je berichten, contacten en wachtwoord-hashes en hoort niet op
+> GitHub. Elke installatie begint dus met een lege database.
+
+Backup maken:
+
+```bash
+docker run --rm -v meshcore-data:/data -v "$PWD:/backup" alpine \
+  cp /data/meshcore.db /backup/meshcore.db.bak
+```
+
+Een bestaande database naar het volume kopiëren (bijvoorbeeld als je eerst
+native draaide):
+
+```bash
+docker stop meshcore-gateway
+docker run --rm -v meshcore-data:/data -v "$PWD:/in" alpine \
+  cp /in/meshcore.db /data/meshcore.db
+docker start meshcore-gateway
+```
+
+Let op: `docker volume rm meshcore-data` of een stack verwijderen mét volumes
+wist je historie definitief.
+
+### Updaten en terugrollen
+
+1. **Backup eerst** (commando hierboven) — schema-migraties zijn forward-only.
+2. Portainer → Stacks → `meshcore-gateway` → **Pull and redeploy**. Draai je op
+   een vaste tag, bump dan `MESHCORE_TAG` en klik *Update the stack*.
+3. Migraties draaien automatisch bij startup; check de logs.
+4. Hard refresh in de browser is niet nodig — de cache-buster `?v={{VERSION}}`
+   op CSS/JS invalideert zichzelf bij elke versie-bump.
+
+**Terugrollen**: zet `MESHCORE_TAG` op de vorige versie en redeploy. Dat werkt
+alleen zolang het DB-schema niet vooruit gemigreerd is; is dat wel gebeurd, dan
+heb je de backup nodig.
+
+### Andere architectuur (Raspberry Pi / arm64)
+
+De CI bouwt op dit moment alleen `linux/amd64`. Op een Pi krijg je daarom een
+`no matching manifest`-fout. Twee opties:
+
+- **Zelf bouwen op de Pi**: repo clonen en `docker compose up -d --build`
+  (gebruikt `docker-compose.yml`). Duurt een paar minuten.
+- **arm64 aan de CI toevoegen**: in `.github/workflows/ci.yml` bij de
+  build-stap `platforms: linux/amd64` vervangen door
+  `platforms: linux/amd64,linux/arm64`. De arm64-build draait via QEMU-emulatie
+  en kost aanzienlijk meer tijd per run.
+
+### Als het niet werkt
+
+| Symptoom | Waarschijnlijke oorzaak | Fix |
+|---|---|---|
+| `denied` / `unauthorized` bij het pullen | package staat (nog) op private | maintainer moet 'm publiek zetten, of voeg in Portainer een ghcr.io-registry toe met een PAT (`read:packages`) |
+| `no matching manifest for linux/arm64` | Pi-host, image is amd64 | zie *Andere architectuur* hierboven |
+| `error gathering device information` bij deploy | het pad in `devices:` bestaat niet op de host | `ls -l /dev/ttyACM* /dev/ttyUSB*` — pad corrigeren |
+| Container start, maar logt een permission-error op de poort | GID in `group_add` klopt niet | `getent group dialout` (of de groep uit `ls -l`) en dat getal invullen |
+| Container blijft *unhealthy* | webserver komt niet op | logs bekijken; vaak hangt 'ie op de companion-handshake — check kabel/firmware |
+| `port is already allocated` | host-poort bezet | linkerkant van `ports:` wijzigen |
+| Geen berichten, wel een werkende UI | verkeerd device doorgegeven (ander USB-serieel apparaat) | by-id-pad gebruiken, zie stap 1 |
+
+---
+
+## Voor maintainers: de CI-pipeline
 
 `.github/workflows/ci.yml` heeft twee jobs:
 
@@ -212,10 +443,10 @@ bouwt het image → image komt op GHCR → Portainer pullt 'm.
 | `checks` | elke push + PR | Python `ast.parse` van de 4 modules · `node --check` per SPA-JS-file · Jinja2 render-smoke van `index.html` · `docker compose config` op beide compose-bestanden · check dat `APP_VERSION` ook in `HANDOFF.md` staat |
 | `build` | na groene checks | Bouwt de image (`linux/amd64`) en pusht naar GHCR — alleen bij push naar `main` of een `v*`-tag. Een PR bouwt wél, pusht níét. |
 
-Er zijn **geen secrets nodig**: de workflow logt in op GHCR met de
-automatische `GITHUB_TOKEN` (`permissions: packages: write`).
+Er zijn **geen secrets nodig**: de workflow logt in op GHCR met de automatische
+`GITHUB_TOKEN` (`permissions: packages: write`).
 
-Tags die gepusht worden vanaf `main`:
+Tags die vanaf `main` gepusht worden:
 
 - `latest` — laatste main-build
 - `1.1.049` — de `APP_VERSION` uit `web.py`
@@ -223,63 +454,14 @@ Tags die gepusht worden vanaf `main`:
 
 Push je een git-tag `v1.1.049`, dan komt die tagnaam er ook bij.
 
-### 2. GHCR-package publiek maken (eenmalig)
+**Eenmalig na de allereerste build:** het package wordt als *private*
+aangemaakt. GitHub → Packages → `meshcore-webclient` → *Package settings* →
+**Change visibility** → *Public*. De `org.opencontainers.image.source`-label in
+de Dockerfile koppelt het package aan de repo, zodat deze README op de
+package-pagina verschijnt.
 
-De eerste build maakt het package aan als **private**. Eenmalig omzetten:
-
-GitHub → je profiel → **Packages** → `meshcore-webclient` → *Package settings*
-→ **Change visibility** → *Public*. Daarna hoeft Portainer niet in te loggen.
-
-Wil je 'm liever privé houden, maak dan een PAT (classic) met scope
-`read:packages` en voeg in Portainer een registry toe: *Registries* →
-*Custom registry* → URL `ghcr.io`, username = je GitHub-naam, password = de PAT.
-
-De `org.opencontainers.image.source`-label in de Dockerfile koppelt het package
-automatisch aan de repo, zodat de repo-README op de package-pagina verschijnt.
-
-### 3. Portainer-stack
-
-Portainer → **Stacks** → *Add stack* → naam `meshcore-gateway` → *Web editor* →
-inhoud van `portainer-stack.yml` plakken → **Deploy**.
-
-Drie dingen nog vóór deploy controleren op de host:
-
-```bash
-ls -l /dev/ttyACM*          # klopt het device-pad?
-getent group dialout        # klopt GID 20?
-ss -ltnp | grep ':8180'     # is de host-poort vrij?
-```
-
-De stack mapt **host-poort 8180 → container-poort 8080** (8080 was op de
-target-host al bezet). Alleen de linkerkant van `ports:` verandert als je een
-andere poort wilt; `MESHCORE_WEB_PORT` en de healthcheck blijven 8080, want
-die leven binnen de container. De UI draait dus op `http://<host>:8180/`.
-
-Pin in productie liever een vaste versie in plaats van `latest`. Dat kan via
-de env-var in de stack:
-
-```
-MESHCORE_TAG=1.1.049
-```
-
-(In Portainer: *Environment variables* onderaan het stack-formulier.)
-
-### 4. Updaten
-
-1. **Backup eerst** — de DB zit in het named volume:
-   ```bash
-   docker run --rm -v meshcore-data:/data -v "$PWD:/backup" alpine \
-     cp /data/meshcore.db /backup/meshcore.db.bak
-   ```
-2. Portainer → Stacks → `meshcore-gateway` → **Pull and redeploy** (of bump
-   `MESHCORE_TAG` naar de nieuwe versie en *Update the stack*).
-3. Schema-migraties draaien automatisch bij startup — check de logs.
-4. Hard refresh in de browser is niet nodig: de cache-buster `?v={{VERSION}}`
-   op CSS/JS invalideert zichzelf bij elke versie-bump.
-
-**Rollback**: zet `MESHCORE_TAG` terug op de vorige versie-tag en redeploy.
-Werkt alleen als je DB-schema niet vooruit is gemigreerd — migraties zijn
-forward-only, dus bij een schema-wijziging heb je de backup nodig.
+De lokale dev-loop verandert niet: `docker compose up -d --build` gebruikt
+`docker-compose.yml` en bouwt vanaf de working copy.
 
 ---
 
