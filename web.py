@@ -43,7 +43,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 #   x = major (handmatig te bepalen)
 #   y = minor (handmatig te bepalen)
 #   z = dot-versie, bumpt bij elke door de gebruiker gevraagde wijziging
-APP_VERSION = "1.1.051"
+APP_VERSION = "1.1.052"
 
 # Module-logger; uvicorn pikt deze automatisch op via root-handlers (stdout,
 # systemd-journal, docker logs). Geen extra config nodig.
@@ -977,22 +977,45 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             favs = await db.all_fav_repeater_pubkeys()
         now_ts = _time.time()
         out = []
+        # v1.1.052: tel waaróm een contact afvalt. Een kale "0 kandidaten" is
+        # niet te onderscheiden van een bug — met deze telling zie je meteen
+        # of het aan het type, de favoriet-vlag, een ontbrekende advert-tijd
+        # of gewoon de drempel ligt.
+        stats = {
+            "contacts_total": 0,
+            "skipped_bad_entry": 0,
+            "skipped_type": 0,
+            "skipped_favorite": 0,
+            "skipped_no_advert": 0,
+            "skipped_too_recent": 0,
+            "newest_age_days": None,
+            "oldest_age_days": None,
+        }
+        ages_in_scope = []
         for pk_hex, c in contacts.items():
+            stats["contacts_total"] += 1
             if not isinstance(pk_hex, str) or not pk_hex:
+                stats["skipped_bad_entry"] += 1
                 continue
             if not isinstance(c, dict):
+                stats["skipped_bad_entry"] += 1
                 continue
             ctype = c.get("type")
             if ctype not in type_set:
+                stats["skipped_type"] += 1
                 continue
             if skip_favorites and pk_hex.lower() in favs:
+                stats["skipped_favorite"] += 1
                 continue
             last_adv = c.get("last_advert")
             if not isinstance(last_adv, (int, float)) or last_adv <= 0:
                 # Onbekend → laat staan (veiliger; geen bewijs van staleness)
+                stats["skipped_no_advert"] += 1
                 continue
             age = now_ts - last_adv
+            ages_in_scope.append(age)
             if age <= age_secs:
+                stats["skipped_too_recent"] += 1
                 continue
             out.append({
                 "pubkey": pk_hex,
@@ -1004,7 +1027,10 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
                 "age_days": round(age / 86400, 1),
             })
         out.sort(key=lambda x: x["last_advert"])  # oudste eerst
-        return out
+        if ages_in_scope:
+            stats["newest_age_days"] = round(min(ages_in_scope) / 86400, 2)
+            stats["oldest_age_days"] = round(max(ages_in_scope) / 86400, 2)
+        return out, stats
 
     def _parse_stale_params(
         days_str: Optional[str],
@@ -1050,13 +1076,14 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
     ):
         _admin_or_403(request)
         age_secs, type_set, skip_favs = _parse_stale_params(days, types, skip_favorites)
-        items = await _stale_contact_candidates(age_secs, type_set, skip_favs)
+        items, stats = await _stale_contact_candidates(age_secs, type_set, skip_favs)
         return {
             "count": len(items),
             "age_days_threshold": age_secs / 86400,
             "types": sorted(type_set),
             "skip_favorites": skip_favs,
             "items": items,
+            "diagnostics": stats,
         }
 
     @app.post("/admin/contacts/cleanup")
@@ -1070,7 +1097,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
         fn = _resolve_cmd("remove_contact")
         if fn is None:
             raise HTTPException(501, "remove_contact niet beschikbaar")
-        items = await _stale_contact_candidates(age_secs, type_set, skip_favs)
+        items, _stats = await _stale_contact_candidates(age_secs, type_set, skip_favs)
         removed, failed = [], []
         for it in items:
             try:
@@ -1114,7 +1141,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
     @app.get("/admin/repeaters/stale")
     async def admin_repeaters_stale(request: Request):
         _admin_or_403(request)
-        items = await _stale_contact_candidates(STALE_REPEATER_AGE_SECS, {2, 3}, True)
+        items, _stats = await _stale_contact_candidates(STALE_REPEATER_AGE_SECS, {2, 3}, True)
         return {
             "count": len(items),
             "age_days_threshold": STALE_REPEATER_AGE_SECS // 86400,
@@ -1127,7 +1154,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
         fn = _resolve_cmd("remove_contact")
         if fn is None:
             raise HTTPException(501, "remove_contact niet beschikbaar")
-        items = await _stale_contact_candidates(STALE_REPEATER_AGE_SECS, {2, 3}, True)
+        items, _stats = await _stale_contact_candidates(STALE_REPEATER_AGE_SECS, {2, 3}, True)
         removed, failed = [], []
         for it in items:
             try:

@@ -321,6 +321,39 @@ function _hkStaleParams(){
   };
 }
 
+// Waarom vielen er contacten af? Zonder dit is "0 kandidaten" niet te
+// onderscheiden van een kapotte filter.
+function _renderStaleDiagnostics(data){
+  const d = data && data.diagnostics;
+  if (!d) return '';
+  const rows = [
+    ['contacten op de companion', d.contacts_total],
+    ['afgevallen op type', d.skipped_type],
+    ['overgeslagen als favoriet', d.skipped_favorite],
+    ['zonder bekende advert-tijd', d.skipped_no_advert],
+    ['te recent voor deze drempel', d.skipped_too_recent],
+    ['onleesbare entries', d.skipped_bad_entry],
+  ].filter(r => r[1]);
+  let extra = '';
+  if (d.oldest_age_days != null) {
+    extra = '<div style="margin-top:6px">Binnen de gekozen types is de oudste advert <b>' +
+            d.oldest_age_days + ' dagen</b> oud, de nieuwste <b>' + d.newest_age_days +
+            ' dagen</b>. Je drempel staat op <b>' +
+            (Math.round((data.age_days_threshold || 0) * 100) / 100) + ' dagen</b>.</div>';
+    if (d.skipped_too_recent && d.oldest_age_days > (data.age_days_threshold || 0)) {
+      extra += '<div style="margin-top:4px;color:#c33">Let op: er is wél iets ouder dan de drempel, ' +
+               'maar het viel af op een andere regel — kijk naar de telling hierboven.</div>';
+    }
+  } else {
+    extra = '<div style="margin-top:6px;color:#c33">Geen enkel contact binnen de gekozen types had een bruikbare advert-tijd. ' +
+            'Dat wijst op een probleem met de contactenlijst, niet op je drempel.</div>';
+  }
+  return '<div class="note" style="margin-top:8px;padding:8px;background:#f7f7f7;border-radius:4px">' +
+         '<b>Waarom niets?</b><ul style="margin:6px 0 0 18px;padding:0">' +
+         rows.map(r => '<li>' + r[0] + ': <b>' + r[1] + '</b></li>').join('') +
+         '</ul>' + extra + '</div>';
+}
+
 async function loadStaleContacts(){
   const el = $('stale-result');
   const p = _hkStaleParams();
@@ -330,7 +363,10 @@ async function loadStaleContacts(){
   let data;
   try { data = await api('/admin/contacts/stale?' + qs); } catch(e) { return; }
   if (!data.count){
-    el.innerHTML = '<div class="kv" style="color:#888">Geen kandidaten — niets ouder dan deze datum binnen de geselecteerde types.</div>';
+    // v1.1.052: geen kale nul meer. De server vertelt nu waaróm elk contact
+    // afviel, zodat je kunt zien of het aan de drempel ligt of aan iets anders.
+    el.innerHTML = '<div class="kv" style="color:#888">Geen kandidaten.</div>' +
+                   _renderStaleDiagnostics(data);
     return;
   }
   const rows = data.items.map(it => {
@@ -352,6 +388,7 @@ async function loadStaleContacts(){
     </table>
     <div class="row" style="margin-top:10px">
       <button onclick="cleanupStaleContacts(${data.count})" class="danger">Verwijder ${data.count} contacten</button>
+      ${_renderStaleDiagnostics(data)}
     </div>`;
 }
 

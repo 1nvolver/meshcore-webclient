@@ -1,6 +1,6 @@
 # Handoff — MeshCore Gateway Web Client
 
-Stand: versie 1.1.051. Deze notitie is bedoeld om het project in een nieuwe
+Stand: versie 1.1.052. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode staat in
 `github.com/1nvolver/meshcore-webclient` (branch `main`) — clone die repo,
 dan heb je alles. Voor de draaiende omgeving zie sectie 9.
@@ -167,7 +167,9 @@ vereist op enkele plekken conversie.
   `/admin/repeaters/stale` + `/admin/repeaters/cleanup` blijven werken met
   hun oude default (28d, {2,3}, skip_favs=true) — geen breaking change.
   Helper `_stale_contact_candidates(age_secs, type_set, skip_favorites)` in
-  `web.py` is de enige plek met de selectie-logica.
+  `web.py` is de enige plek met de selectie-logica; hij geeft sinds
+  v1.1.052 `(items, stats)` terug, waarbij `stats` per reden telt hoeveel
+  contacten afvielen. De UI toont dat onder de uitslag.
 - **OTA repeater-management**: vanuit het repeater-rapport een row klikken
   selecteert 'm; in het detail-paneel verschijnt het Manage-paneel met:
   login-form (admin-wachtwoord → `send_login_sync`), request-status-knop

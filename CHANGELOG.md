@@ -2,7 +2,7 @@
 
 Per-versie wijzigingen, chronologisch (nieuwste onderaan).
 
-- **Huidige versie:** v1.1.051 (zie laatste sectie).
+- **Huidige versie:** v1.1.052 (zie laatste sectie).
 - **Voor architectuur, DB-schema, voltooide features en backlog:** zie `HANDOFF.md`.
 - **Voor end-user setup / deploy / update-procedure:** zie `README.md`.
 
@@ -877,6 +877,40 @@ verwijderen zelf is niet end-to-end getest; daar is een radio voor nodig.
 **Nog open:** of de companion het verwijderen in firmware 1.17.1 überhaupt
 accepteert, weten we nu pas ná deze fix — de foutmelding die je straks ziet
 (weigering vs. time-out) is het antwoord.
+
+### v1.1.052 — Housekeeping legt uit waarom er niets overblijft
+
+Vervolg op v1.1.051. User meldt: bij élke datum "Geen kandidaten". Dat kan
+vijf verschillende dingen betekenen en de UI zei niet wélke — onmogelijk om
+op afstand te diagnosticeren, en voor de user net zo goed een black box.
+
+`_stale_contact_candidates()` geeft nu `(items, stats)` terug in plaats van
+alleen `items`. De telling in `stats`:
+
+| veld | betekenis |
+|---|---|
+| `contacts_total` | hoeveel contacten de companion-cache bevat |
+| `skipped_type` | viel af omdat het type niet aangevinkt stond |
+| `skipped_favorite` | overgeslagen door "favorieten overslaan" |
+| `skipped_no_advert` | geen bruikbare `last_advert` (0, None of geen getal) |
+| `skipped_too_recent` | wél in scope, maar jonger dan de drempel |
+| `oldest/newest_age_days` | leeftijd van de oudste/nieuwste advert *binnen de gekozen types* |
+
+`/admin/contacts/stale` geeft dit mee als `diagnostics`. De UI toont het
+onder de uitslag — ook als er wél kandidaten zijn.
+
+Twee gevallen krijgen een expliciete melding:
+- **geen enkel contact had een bruikbare advert-tijd** → dat wijst op de
+  contactenlijst, niet op je drempel;
+- **er is wel iets ouder dan de drempel maar het viel elders af** → dan is de
+  telling hierboven het antwoord.
+
+**Geverifieerd:** `_stale_contact_candidates` is letterlijk uit `web.py`
+geëxtraheerd en gedraaid tegen een verzonnen contactenlijst (oud/vers
+repeater, room, client, favoriet, `last_advert=0`, `last_advert=None`) bij
+vier drempels. Kandidaten én tellingen kloppen in alle vier de gevallen.
+
+Geen gedragswijziging in de selectie zelf — alleen zichtbaarheid.
 
 ---
 
