@@ -2,7 +2,7 @@
 
 Per-versie wijzigingen, chronologisch (nieuwste onderaan).
 
-- **Huidige versie:** v1.1.050 (zie laatste sectie).
+- **Huidige versie:** v1.1.051 (zie laatste sectie).
 - **Voor architectuur, DB-schema, voltooide features en backlog:** zie `HANDOFF.md`.
 - **Voor end-user setup / deploy / update-procedure:** zie `README.md`.
 
@@ -825,6 +825,58 @@ Wél geretried: timeout en andere mesh-zijdige `ok:false`-statussen.
 
 **Lint**: Python schoon, alle 8 JS-files schoon, render-smoke groen. Niet
 end-to-end getest — geen radio in de dev-omgeving.
+
+### v1.1.051 — Bugfix: housekeeping meldde "verwijderd" zonder te verwijderen
+
+**Symptoom (door user gemeld):** opschonen van stale contacten meldt
+"N verwijderd, 0 mislukt", maar de verwijderde repeaters staan daarna nog
+gewoon in het overzicht.
+
+**Oorzaak 1 — het resultaat werd nooit gecontroleerd.** `remove_contact()`
+uit de meshcore-SDK geeft een `Event` terug met type `command_ok` of
+`command_error`, en `None` bij een time-out. Onze code deed:
+
+```python
+await fn(it["pubkey"])
+removed.append(...)          # ← telt als succes zodra er geen exception is
+```
+
+Een weigering van de companion is géén exception, dus elke poging landde in
+`removed` en `failed_count` was per definitie 0. De melding was dus letterlijk
+altijd "N verwijderd, 0 mislukt", ongeacht wat er gebeurde.
+
+Fix: nieuwe helper `_event_is_ok(ev)` die alleen `command_ok` als succes ziet
+en anders een leesbare reden teruggeeft (weigering + `reason`/`error` uit de
+payload, time-out, of een onverwacht eventtype). Toegepast op zowel
+`/admin/contacts/cleanup` als de legacy `/admin/repeaters/cleanup`.
+
+**Oorzaak 2 — de cache werd niet ververst.** Zowel de kandidatenlijst als
+`/reports/repeaters` leest uit `mc.contacts`. Die wordt alleen door de
+5-minuten-loop in `gateway.py` bijgewerkt. Een succesvolle verwijdering was
+dus tot 5 minuten lang onzichtbaar — en een tweede opruimronde in dat venster
+mikte opnieuw op dezelfde, al verwijderde contacten.
+
+Fix: `_refresh_contacts_cache()` draait direct na de opruimronde
+(`get_contacts()`, 8s time-out). De respons bevat `contacts_refreshed`, en de
+UI waarschuwt als dat false is.
+
+**Oorzaak 3 (bijvangst) — `_known_repeaters` groeide alleen maar.**
+`refresh_repeater_cache()` deed `_known_repeaters.update(new_lookup)`, dus
+prefixes van verwijderde of hernoemde nodes bleven eeuwig staan en
+pad-visualisatie toonde namen van contacten die niet meer bestonden. Nu
+`clear()` + `update()`.
+
+**UI:** mislukte verwijderingen worden niet meer weggemoffeld — rode toast +
+een overzicht van de eerste 5 redenen.
+
+**Geverifieerd:** `_event_is_ok` is letterlijk uit `web.py` geëxtraheerd en
+gedraaid tegen echte `meshcore.events.Event`-objecten (OK, ERROR met en
+zonder reason, None, ander eventtype) — alle vijf gevallen correct. Het
+verwijderen zelf is niet end-to-end getest; daar is een radio voor nodig.
+
+**Nog open:** of de companion het verwijderen in firmware 1.17.1 überhaupt
+accepteert, weten we nu pas ná deze fix — de foutmelding die je straks ziet
+(weigering vs. time-out) is het antwoord.
 
 ---
 

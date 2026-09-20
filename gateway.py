@@ -509,6 +509,10 @@ async def refresh_repeater_cache(mc) -> None:
                 # wins. Voor 1-byte prefixes is dat onvermijdelijk.
                 new_lookup[key] = str(name)
     _known_repeaters.clear()
+    # v1.1.051: vervángen, niet mergen. Met .update() bleven prefixes van
+    # verwijderde of hernoemde contacten voor altijd in de lookup staan, zodat
+    # pad-visualisatie namen toonde van nodes die niet meer bestaan.
+    _known_repeaters.clear()
     _known_repeaters.update(new_lookup)
 
 

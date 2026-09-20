@@ -1,6 +1,6 @@
 # Handoff — MeshCore Gateway Web Client
 
-Stand: versie 1.1.050. Deze notitie is bedoeld om het project in een nieuwe
+Stand: versie 1.1.051. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode staat in
 `github.com/1nvolver/meshcore-webclient` (branch `main`) — clone die repo,
 dan heb je alles. Voor de draaiende omgeving zie sectie 9.
@@ -261,6 +261,17 @@ vereist op enkele plekken conversie.
   geen `pubkey_prefix` op channel-events; we pakken "NAAM:" uit de tekst.
 - **RSSI** komt in sommige firmware-versies niet door op channel-events (alleen
   SNR). UI toont alleen wat aanwezig is.
+- **Companion-commando's geven een Event terug, geen exception bij fouten.**
+  `remove_contact` en verwanten leveren `command_ok` of `command_error` (of
+  `None` bij time-out). Een weigering is dus géén exception — `await fn(...)`
+  zonder het resultaat te checken telt een mislukking als succes. Dat was
+  precies de bug in v1.1.050 en eerder (zie CHANGELOG v1.1.051). Gebruik
+  `_event_is_ok(ev)` in `web.py` voor elk nieuw commando dat je toevoegt.
+- **`mc.contacts` is een cache, geen live view.** Hij wordt ververst door
+  `repeater_cache_loop` in `gateway.py` (elke 5 min) en sinds v1.1.051 ook
+  direct na een opruimronde via `_refresh_contacts_cache()`. Muteer je de
+  contactenlijst op de companion, ververs 'm dan expliciet — anders leest de
+  UI minutenlang achterhaalde data en lijkt de actie niet gewerkt te hebben.
 - **Bot-cache TTL 30s**: admin-wijzigingen aan bots zijn pas na ≤30s actief.
 - **In-memory sessies**, geen CSRF, geen rate-limiting op `/login`. Acceptabel
   voor home-LAN, niet voor blootstelling op internet. Cookie is sinds v1.1.047

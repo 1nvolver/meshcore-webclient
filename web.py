@@ -43,7 +43,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 #   x = major (handmatig te bepalen)
 #   y = minor (handmatig te bepalen)
 #   z = dot-versie, bumpt bij elke door de gebruiker gevraagde wijziging
-APP_VERSION = "1.1.050"
+APP_VERSION = "1.1.051"
 
 # Module-logger; uvicorn pikt deze automatisch op via root-handlers (stdout,
 # systemd-journal, docker logs). Geen extra config nodig.
@@ -923,6 +923,43 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
 
     _TYPE_LABEL = {1: "client", 2: "repeater", 3: "room", 4: "sensor"}
 
+    def _event_is_ok(ev) -> tuple[bool, str]:
+        """Beoordeel het Event dat een companion-commando teruggeeft.
+
+        De meshcore-SDK geeft een `Event` met type OK (`command_ok`) of
+        ERROR (`command_error`) terug, en None als er niets binnen de
+        time-out kwam. Alleen OK is succes — al het andere is een fout die
+        de user te zien moet krijgen, niet stilzwijgend als 'gelukt' tellen.
+        """
+        if ev is None:
+            return False, "geen antwoord van de companion (timeout)"
+        ev_type = getattr(ev, "type", None)
+        ev_type_str = getattr(ev_type, "value", str(ev_type))
+        if ev_type_str == "command_ok":
+            return True, ""
+        payload = getattr(ev, "payload", None)
+        detail = ""
+        if isinstance(payload, dict):
+            detail = str(payload.get("reason") or payload.get("error") or "").strip()
+        elif payload:
+            detail = str(payload).strip()
+        if ev_type_str == "command_error":
+            return False, f"companion weigerde het commando{(': ' + detail) if detail else ''}"
+        return False, f"onverwacht antwoord: {ev_type_str}{(' — ' + detail) if detail else ''}"
+
+    async def _refresh_contacts_cache() -> bool:
+        """Haal de contactenlijst opnieuw op bij de companion zodat
+        `mc.contacts` klopt. Returnt False als het niet lukte (dan is de
+        weergave hooguit tot de volgende cache-loop achterhaald)."""
+        fn = _resolve_cmd("get_contacts")
+        if fn is None:
+            return False
+        try:
+            await asyncio.wait_for(fn(), timeout=8.0)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
     async def _stale_contact_candidates(
         age_secs: int,
         type_set: set,
@@ -1037,16 +1074,37 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
         removed, failed = [], []
         for it in items:
             try:
-                await fn(it["pubkey"])
-                removed.append({"pubkey_prefix": it["pubkey_prefix"], "name": it["name"], "type_label": it["type_label"]})
+                ev = await fn(it["pubkey"])
             except Exception as e:  # noqa: BLE001
-                failed.append({"pubkey_prefix": it["pubkey_prefix"], "name": it["name"], "error": str(e)})
+                failed.append({"pubkey_prefix": it["pubkey_prefix"], "name": it["name"],
+                               "error": str(e)})
+                continue
+            # v1.1.051: remove_contact levert een Event op (OK of ERROR), en bij
+            # een time-out None. Tot v1.1.050 keken we daar niet naar — elke
+            # niet-crashende aanroep telde als "verwijderd". Resultaat: de UI
+            # meldde "N verwijderd, 0 mislukt" terwijl de companion het
+            # geweigerd had en de contacten gewoon bleven staan.
+            ok, why = _event_is_ok(ev)
+            if ok:
+                removed.append({"pubkey_prefix": it["pubkey_prefix"], "name": it["name"],
+                                "type_label": it["type_label"]})
+            else:
+                failed.append({"pubkey_prefix": it["pubkey_prefix"], "name": it["name"],
+                               "error": why})
+
+        # Cache verversen: /reports/repeaters en de kandidatenlijst lezen beide
+        # uit mc.contacts. Zonder refresh blijft een succesvol verwijderd
+        # contact daar tot de 5-minuten-loop in gateway.py 'm opnieuw ophaalt —
+        # wat eruitziet alsof het verwijderen niet gewerkt heeft.
+        contacts_refreshed = await _refresh_contacts_cache()
+
         return {
             "ok": True,
             "removed_count": len(removed),
             "failed_count": len(failed),
             "removed": removed,
             "failed": failed,
+            "contacts_refreshed": contacts_refreshed,
             "message": f"{len(removed)} verwijderd, {len(failed)} mislukt",
         }
 
@@ -1073,10 +1131,16 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
         removed, failed = [], []
         for it in items:
             try:
-                await fn(it["pubkey"])
-                removed.append(it["pubkey_prefix"])
+                ev = await fn(it["pubkey"])
             except Exception as e:  # noqa: BLE001
                 failed.append({"pubkey_prefix": it["pubkey_prefix"], "error": str(e)})
+                continue
+            ok, why = _event_is_ok(ev)   # v1.1.051, zie /admin/contacts/cleanup
+            if ok:
+                removed.append(it["pubkey_prefix"])
+            else:
+                failed.append({"pubkey_prefix": it["pubkey_prefix"], "error": why})
+        await _refresh_contacts_cache()
         return {
             "ok": True,
             "removed_count": len(removed),

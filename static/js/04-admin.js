@@ -367,7 +367,23 @@ async function cleanupStaleContacts(expected){
       skip_favorites: p.skip_favorites === '1',
     })});
   } catch(e) { return; }
-  toast(res.message || 'klaar', 'ok');
+  // v1.1.051: mislukte verwijderingen niet wegmoffelen. De server telt nu
+  // alleen een echt 'command_ok' als verwijderd; de rest komt hier terug met
+  // een reden (companion weigerde / timeout).
+  const failed = res.failed_count || 0;
+  if (failed > 0) {
+    toast(res.message || 'klaar', 'err');
+    const reasons = (res.failed || []).slice(0, 5)
+      .map(f => (f.name || f.pubkey_prefix || '?') + ': ' + (f.error || 'onbekend'));
+    const extra = (res.failed || []).length > 5 ? '\n…en nog ' + ((res.failed || []).length - 5) : '';
+    alert('Niet alle contacten zijn verwijderd (' + failed + ' mislukt):\n\n' +
+          reasons.join('\n') + extra);
+  } else {
+    toast(res.message || 'klaar', 'ok');
+  }
+  if (res.contacts_refreshed === false) {
+    toast('contactenlijst kon niet ververst worden — het overzicht loopt mogelijk achter', 'err');
+  }
   loadStaleContacts();
   refresh();
 }
