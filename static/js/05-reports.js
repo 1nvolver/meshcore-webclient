@@ -144,7 +144,7 @@ async function renderReportRepeaters(){
       </div>
       <table style="width:100%">
         <thead><tr>
-          <th style="width:24px" title="favoriet">★</th>
+          <th style="width:52px" title="favoriet / verwijderen">★ 🗑</th>
           ${_repSortTh('name','Naam')}${_repSortTh('type','Type')}${_repSortTh('hash','Hash')}${_repSortTh('pubkey','Pubkey-prefix')}${_repSortTh('last_advert','Laatste advert')}${_repSortTh('loc','Locatie')}${_repSortTh('path','Path')}
           <th>Ping</th>
         </tr></thead>
@@ -217,7 +217,7 @@ function _repUpdateSortHeaders(){
   if (!thead) return;
   const cols = [['name','Naam'],['type','Type'],['hash','Hash'],['pubkey','Pubkey-prefix'],
                 ['last_advert','Laatste advert'],['loc','Locatie'],['path','Path']];
-  thead.innerHTML = '<th style="width:24px" title="favoriet">★</th>' +
+  thead.innerHTML = '<th style="width:52px" title="favoriet / verwijderen">★ 🗑</th>' +
                     cols.map(c => _repSortTh(c[0], c[1])).join('') +
                     '<th>Ping</th>';
 }
@@ -271,6 +271,12 @@ function renderRepeaterRows(){
     const star = '<span class="fav-star" style="cursor:pointer;font-size:16px;color:'+starColor+'" '+
                  'title="'+starTitle+'" onclick="toggleRepeaterFav(\''+r.pubkey+'\','+(r.is_favorite?'true':'false')+')">'+
                  starChar+'</span>';
+    // v1.1.056: losse verwijder-knop. Bewust een apart icoon naast de ster in
+    // dezelfde cel — een extra kolom zou de colspan en alle data-labels raken.
+    const delName = (r.name || '?').replace(/"/g,'&quot;').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
+    const del = '<span class="rep-del" style="cursor:pointer;font-size:14px;margin-left:6px;opacity:0.55" '+
+                'title="verwijder dit contact van de companion" '+
+                'onclick="removeRepeaterContact(\''+r.pubkey+'\',\''+delName+'\','+(r.is_favorite?'true':'false')+')">🗑</span>';
     const pingCellId = 'ping-cell-' + r.pubkey.slice(0, 12);
     const pingCell = '<button style="padding:2px 8px;font-size:12px" onclick="event.stopPropagation();pingRepeater(\''+r.pubkey+'\')">ping</button> ' +
                      '<span id="'+pingCellId+'" style="font-size:11px;color:#666;margin-left:4px"></span>';
@@ -278,7 +284,7 @@ function renderRepeaterRows(){
     const rowStyle = isSel ? ' style="background:#e8f1ff;cursor:pointer" ' : ' style="cursor:pointer" ';
     const escName = (r.name || '?').replace(/"/g,'&quot;').replace(/\\/g,'\\\\').replace(/'/g,"\\'");
     return '<tr' + rowStyle + 'onclick="selectRepeater(\''+r.pubkey+'\',\''+escName+'\',\''+r.type_label+'\')">' +
-      '<td style="text-align:center" onclick="event.stopPropagation()">' + star + '</td>' +
+      '<td style="text-align:center;white-space:nowrap" data-label="" onclick="event.stopPropagation()">' + star + del + '</td>' +
       '<td data-label="Naam">' + escapeHTML(r.name || '?') + '</td>' +
       '<td data-label="Type">' + r.type_label + '</td>' +
       '<td data-label="Hash">' + hashCell + '</td>' +
@@ -755,6 +761,39 @@ function renderRepeaterManage(){
   }
 
   return headerBlock + loginBlock + statusBlock + actionsBlock + cliBlock;
+}
+
+/* Handmatig één contact van de companion verwijderen (v1.1.056).
+   Niet ongedaan te maken vanaf onze kant — de node komt alleen terug als 'ie
+   opnieuw adverteert. Daarom altijd een bevestiging met de naam erin. */
+async function removeRepeaterContact(pubkey, name, isFav){
+  let msg = 'Contact "' + name + '" van de companion verwijderen?\n\n' +
+            'Dit kan niet ongedaan gemaakt worden; de node verschijnt pas weer ' +
+            'als er een nieuwe advert binnenkomt.';
+  if (isFav) {
+    msg += '\n\nLet op: dit is een favoriet. De ster blijft bewaard, zodat ' +
+           'hij weer bovenaan staat als het contact terugkomt.';
+  }
+  if (!confirm(msg)) return;
+  let res;
+  try {
+    res = await api('/admin/contacts/remove', {method:'POST',
+      body: JSON.stringify({pubkey: pubkey})});
+  } catch(e) { return; }
+  if (!res.ok) {
+    toast(res.error || 'verwijderen mislukt', 'err');
+    return;
+  }
+  toast(res.message || 'verwijderd', 'ok');
+  // Rij lokaal weghalen zodat de tabel meteen klopt; de server heeft z'n
+  // contacten-cache al ververst, dus een volle refresh zou hetzelfde opleveren.
+  STATE.repeaterRows = (STATE.repeaterRows || []).filter(x => x.pubkey !== pubkey);
+  if (STATE.selectedRepeater && STATE.selectedRepeater.pubkey === pubkey) {
+    STATE.selectedRepeater = null;
+    stopRepeaterCountdown();
+    renderDetail();
+  }
+  renderRepeaterRows();
 }
 
 async function toggleRepeaterFav(pubkey, isFav){

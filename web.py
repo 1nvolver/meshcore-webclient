@@ -43,7 +43,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 #   x = major (handmatig te bepalen)
 #   y = minor (handmatig te bepalen)
 #   z = dot-versie, bumpt bij elke door de gebruiker gevraagde wijziging
-APP_VERSION = "1.1.055"
+APP_VERSION = "1.1.056"
 
 # Module-logger; uvicorn pikt deze automatisch op via root-handlers (stdout,
 # systemd-journal, docker logs). Geen extra config nodig.
@@ -1228,6 +1228,47 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             "removed": removed,
             "failed": failed,
             "message": f"{len(removed)} verwijderd, {len(failed)} mislukt",
+        }
+
+    @app.post("/admin/contacts/remove")
+    async def admin_contacts_remove(request: Request, payload: dict):
+        """Eén contact handmatig van de companion verwijderen (v1.1.056).
+
+        Losse tegenhanger van de bulk-opruiming: geen leeftijdsdrempel, geen
+        type-filter — je wijst precies één node aan. Zelfde zorgvuldigheid:
+        het Event wordt gecontroleerd (zie `_event_is_ok`) en de
+        contacten-cache wordt daarna ververst, anders blijft de rij tot de
+        volgende cache-ronde in het overzicht staan.
+
+        De favoriet-markering blijft bewust staan: een contact kan via een
+        nieuwe advert terugkomen, en dan wil je je ster niet kwijt zijn.
+        """
+        _admin_or_403(request)
+        pubkey = (payload.get("pubkey") or "").strip().lower()
+        if not pubkey:
+            raise HTTPException(400, "pubkey vereist")
+        contact, pk_hex = _get_repeater_contact(pubkey)
+        if contact is None:
+            # Kan ook betekenen dat 'ie al weg is en onze cache achterliep.
+            await _refresh_contacts_cache()
+            raise HTTPException(404, "contact onbekend op companion")
+        name = contact.get("adv_name") if isinstance(contact, dict) else None
+        fn = _resolve_cmd("remove_contact")
+        if fn is None:
+            raise HTTPException(501, "remove_contact niet beschikbaar")
+        try:
+            ev = await fn(pk_hex)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e), "name": name}
+        ok, why = _event_is_ok(ev)
+        refreshed = await _refresh_contacts_cache() if ok else False
+        return {
+            "ok": ok,
+            "name": name,
+            "pubkey": pk_hex,
+            "error": None if ok else why,
+            "contacts_refreshed": refreshed,
+            "message": (f"{name or pk_hex[:12]} verwijderd" if ok else why),
         }
 
     @app.post("/admin/repeaters/ping")

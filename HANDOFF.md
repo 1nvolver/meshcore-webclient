@@ -1,6 +1,6 @@
 # Handoff — MeshCore Gateway Web Client
 
-Stand: versie 1.1.055. Deze notitie is bedoeld om het project in een nieuwe
+Stand: versie 1.1.056. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode staat in
 `github.com/1nvolver/meshcore-webclient` (branch `main`) — clone die repo,
 dan heb je alles. Voor de draaiende omgeving zie sectie 9.
@@ -156,7 +156,9 @@ vereist op enkele plekken conversie.
   de companion de contact kent.
 - **Bots**: admin-defined, reageren alleen op `@[<node-naam>] ?keyword`.
 - **Repeater-rapport**: zoekbalk (filtert op naam/pubkey/hash), per-user
-  favoriet-ster (DB-opslag, bovenaan gesorteerd). Ping-knop per row die
+  favoriet-ster (DB-opslag, bovenaan gesorteerd) en sinds v1.1.056 een
+  prullenbak-icoon per rij dat het contact van de companion verwijdert
+  (`POST /admin/contacts/remove`; favoriet-markering blijft staan). Ping-knop per row die
   `req_status_sync` aanroept en duration + SNR-there (uit status-payload) +
   SNR-here (best-effort via RX_LOG-buffer-correlatie) toont.
 - **Housekeeping — stale companion-contacten** (gegeneraliseerd in v1.1.039):

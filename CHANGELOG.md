@@ -2,7 +2,7 @@
 
 Per-versie wijzigingen, chronologisch (nieuwste onderaan).
 
-- **Huidige versie:** v1.1.055 (zie laatste sectie).
+- **Huidige versie:** v1.1.056 (zie laatste sectie).
 - **Voor architectuur, DB-schema, voltooide features en backlog:** zie `HANDOFF.md`.
 - **Voor end-user setup / deploy / update-procedure:** zie `README.md`.
 
@@ -1039,6 +1039,38 @@ de klok-fix werkt niet met terugwerkende kracht, elk contact krijgt pas een
 kloppende tijd bij zijn volgende advert.
 
 Geen wijziging in de selectielogica — dit is puur wat het scherm vertelt.
+
+### v1.1.056 — Repeater handmatig verwijderen vanuit het overzicht
+
+De bulk-opruiming werkt op leeftijd; soms wil je gewoon één specifieke node
+weg. Naast de favoriet-ster staat nu een prullenbak-icoon.
+
+**`web.py`:** `POST /admin/contacts/remove` met `{pubkey}`. Admin-only, en met
+dezelfde zorgvuldigheid als de bulk-variant sinds v1.1.051:
+- het `Event` van `remove_contact` wordt gecontroleerd via `_event_is_ok()`,
+  dus een weigering of time-out komt als fout terug in plaats van als succes;
+- daarna draait `_refresh_contacts_cache()`, anders blijft de rij tot de
+  volgende cache-ronde in het overzicht staan;
+- is het contact al weg (onze cache liep achter), dan volgt een 404 ná een
+  cache-refresh, zodat de UI daarna klopt.
+
+**`05-reports.js`:** `removeRepeaterContact()` met een bevestiging waarin de
+naam van de node staat, plus de waarschuwing dat het niet terug te draaien is
+— de node komt alleen terug via een nieuwe advert. Na succes wordt de rij
+lokaal uit `STATE.repeaterRows` gehaald en, als het de geselecteerde repeater
+was, het detail-paneel leeggemaakt en de sessie-countdown gestopt.
+
+**De favoriet-markering blijft bewust staan.** Een contact kan via een advert
+terugkomen; dan wil je je ster niet kwijt zijn. Bij een favoriet zegt de
+bevestiging dat er expliciet bij.
+
+**Plaatsing:** het icoon staat in dezelfde cel als de ster, niet in een eigen
+kolom. Een extra kolom zou de `colspan` van de lege-tabel-regel en alle
+`data-label`-attributen voor de mobiele kaartweergave raken.
+
+**CSS:** gedempt weergegeven zodat het niet met de ster concurreert, rood en
+iets groter bij hover. Op ≤767px (geen hover) meteen zichtbaar en ruimer
+tikbaar.
 
 ---
 

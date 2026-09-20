@@ -450,3 +450,13 @@
   .rep-cd{font-family:monospace;font-weight:bold}
   .rep-cd.cd-warn{color:#c33;animation:cd-blink 1s steps(2, end) infinite}
   @keyframes cd-blink{50%{opacity:0.45}}
+
+/* Repeater-overzicht: verwijder-icoon naast de favoriet-ster (v1.1.056).
+   Standaard gedempt zodat het niet concurreert met de ster; bij hover
+   duidelijk rood, want het is een destructieve actie. */
+.rep-del { transition: opacity .12s, transform .12s; }
+.rep-del:hover { opacity: 1 !important; transform: scale(1.15); filter: saturate(1.4); }
+@media (max-width: 767px) {
+  /* Op mobile is hover er niet — daar meteen goed zichtbaar en groter tikbaar. */
+  .rep-del { opacity: 0.8 !important; font-size: 16px !important; padding: 4px; }
+}
