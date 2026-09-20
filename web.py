@@ -43,7 +43,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 #   x = major (handmatig te bepalen)
 #   y = minor (handmatig te bepalen)
 #   z = dot-versie, bumpt bij elke door de gebruiker gevraagde wijziging
-APP_VERSION = "1.1.056"
+APP_VERSION = "1.1.057"
 
 # Module-logger; uvicorn pikt deze automatisch op via root-handlers (stdout,
 # systemd-journal, docker logs). Geen extra config nodig.
@@ -988,17 +988,18 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
         return False, f"onverwacht antwoord: {ev_type_str}{(' — ' + detail) if detail else ''}"
 
     async def _refresh_contacts_cache() -> bool:
-        """Haal de contactenlijst opnieuw op bij de companion zodat
-        `mc.contacts` klopt. Returnt False als het niet lukte (dan is de
-        weergave hooguit tot de volgende cache-loop achterhaald)."""
-        fn = _resolve_cmd("get_contacts")
-        if fn is None:
-            return False
+        """Contactenlijst opnieuw ophalen én verdwenen entries prunen.
+
+        De implementatie staat in `gateway.refresh_contacts()`; zie daar
+        waarom prunen nodig is (de SDK-cache groeit alleen maar). Returnt
+        False als het ophalen niet lukte.
+        """
+        import gateway as _gw
         try:
-            await asyncio.wait_for(fn(), timeout=8.0)
-            return True
+            res = await _gw.refresh_contacts(mc, prune=True)
         except Exception:  # noqa: BLE001
             return False
+        return bool(res.get("ok"))
 
     async def _stale_contact_candidates(
         age_secs: int,
@@ -1166,6 +1167,8 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             # geweigerd had en de contacten gewoon bleven staan.
             ok, why = _event_is_ok(ev)
             if ok:
+                import gateway as _gw
+                _gw.forget_contact_locally(mc, it["pubkey"])
                 removed.append({"pubkey_prefix": it["pubkey_prefix"], "name": it["name"],
                                 "type_label": it["type_label"]})
             else:
@@ -1217,6 +1220,8 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
                 continue
             ok, why = _event_is_ok(ev)   # v1.1.051, zie /admin/contacts/cleanup
             if ok:
+                import gateway as _gw
+                _gw.forget_contact_locally(mc, it["pubkey"])
                 removed.append(it["pubkey_prefix"])
             else:
                 failed.append({"pubkey_prefix": it["pubkey_prefix"], "error": why})
@@ -1261,7 +1266,13 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e), "name": name}
         ok, why = _event_is_ok(ev)
-        refreshed = await _refresh_contacts_cache() if ok else False
+        refreshed = False
+        if ok:
+            # Eerst lokaal vergeten: dan klopt het scherm ook als de refresh
+            # hierna faalt. De SDK-cache gooit 'm namelijk nooit zelf weg.
+            import gateway as _gw
+            _gw.forget_contact_locally(mc, pk_hex)
+            refreshed = await _refresh_contacts_cache()
         return {
             "ok": ok,
             "name": name,

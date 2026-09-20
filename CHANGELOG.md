@@ -2,7 +2,7 @@
 
 Per-versie wijzigingen, chronologisch (nieuwste onderaan).
 
-- **Huidige versie:** v1.1.056 (zie laatste sectie).
+- **Huidige versie:** v1.1.057 (zie laatste sectie).
 - **Voor architectuur, DB-schema, voltooide features en backlog:** zie `HANDOFF.md`.
 - **Voor end-user setup / deploy / update-procedure:** zie `README.md`.
 
@@ -1071,6 +1071,56 @@ kolom. Een extra kolom zou de `colspan` van de lege-tabel-regel en alle
 **CSS:** gedempt weergegeven zodat het niet met de ster concurreert, rood en
 iets groter bij hover. Op ≤767px (geen hover) meteen zichtbaar en ruimer
 tikbaar.
+
+### v1.1.057 — De echte oorzaak: de SDK-contactencache groeit alleen maar
+
+User: handmatig verwijderen lukt, maar bij terugkomen in het scherm staan alle
+repeaters er weer. Dit is dezelfde onderliggende fout die de bulk-opruiming
+sinds het begin ondermijnde — v1.1.051 loste alleen de helft ervan op.
+
+**De oorzaak zit in de SDK.** `MeshCore._update_contacts` doet per binnenkomend
+contact:
+
+```python
+if c["public_key"] in self._contacts:
+    self._contacts[c["public_key"]].update(c)
+else:
+    self._contacts[c["public_key"]] = c
+```
+
+Er wordt **nooit** iets verwijderd. Haal je een contact van de companion af,
+dan stuurt het apparaat 'm daarna niet meer mee — maar de oude entry blijft in
+`mc.contacts` staan, en elke `get_contacts()` laat 'm rustig staan. Onze
+"refresh na verwijderen" uit v1.1.051 kon dus per definitie niets opruimen:
+hij haalde de lijst op en merge'de 'm over een dict die de dode entry al
+bevatte.
+
+Dat verklaart het hele verloop van deze zoektocht: de contacten wáren
+waarschijnlijk al die tijd wel degelijk van de companion verwijderd — ze bleven
+alleen in onze cache hangen, en dus in het overzicht.
+
+**`gateway.py` — `refresh_contacts(mc, prune=True)`:** `get_contacts()` geeft
+het afsluitende CONTACTS-event terug, en de payload daarvan is de volledige
+lijst zoals de companion 'm zojuist opsomde. Die is de bron van waarheid:
+alles in `mc.contacts` dat daar niet in voorkomt, wordt gepruned.
+
+Alleen prunen bij een echt CONTACTS-event. Een time-out levert een
+ERROR-event op, en dan mag je vooral niets weggooien — anders wist een
+haperende seriële verbinding je hele contactenlijst uit beeld.
+
+**`forget_contact_locally(mc, pubkey)`:** direct na een bevestigde
+`remove_contact` wordt de entry meteen lokaal weggegooid, zodat het scherm ook
+klopt als de refresh daarna faalt. Toegepast op de losse verwijderknop én op
+beide bulk-opruimpaden.
+
+**`refresh_repeater_cache()`** (de 5-minutenlus) gebruikt nu dezelfde functie,
+dus de cache loopt ook vanzelf schoon zonder dat er iemand op een knop drukt.
+
+**Geverifieerd** tegen een nagebootste SDK die zich gedraagt als de echte
+(mergen, nooit verwijderen): contact verdwenen op device → gepruned;
+ERROR/time-out → niets gepruned; lege lijst → alles gepruned; `prune=False` →
+alleen ophalen; `forget_contact_locally` ook met afwijkende hoofdletters, en
+netjes False bij een onbekende sleutel.
 
 ---
 

@@ -479,18 +479,100 @@ _pending_repeats: list = []
 _known_repeaters: dict[str, str] = {}
 
 
+async def refresh_contacts(mc, prune: bool = True) -> dict:
+    """Haal de contactenlijst opnieuw op bij de companion.
+
+    LET OP — dit bestaat omdat `mc.contacts` alleen maar GROEIT. De SDK
+    (`MeshCore._update_contacts`) doet per binnengekomen contact:
+
+        if pk in self._contacts: self._contacts[pk].update(c)
+        else:                    self._contacts[pk] = c
+
+    Er wordt dus nooit iets verwijderd. Haal je een contact van de companion
+    af, dan stuurt het apparaat 'm daarna niet meer mee — maar de oude entry
+    blijft in de dict staan, en elke `get_contacts()` laat 'm gewoon staan.
+    Gevolg (bug t/m v1.1.056): verwijderde repeaters kwamen bij de volgende
+    schermwissel weer tevoorschijn alsof er niets gebeurd was.
+
+    `get_contacts()` geeft het afsluitende CONTACTS-event terug, en de payload
+    daarvan IS de volledige lijst zoals de companion 'm zojuist opsomde. Die
+    gebruiken we als bron van waarheid om verdwenen sleutels te prunen.
+
+    Alleen prunen bij een echt CONTACTS-event: een time-out levert een
+    ERROR-event en dan mag je vooral niets weggooien.
+    """
+    out = {"ok": False, "pruned": 0, "total": None, "error": None}
+    cmds = getattr(mc, "commands", None)
+    fn = getattr(cmds, "get_contacts", None) if cmds is not None else None
+    if not callable(fn):
+        out["error"] = "get_contacts niet beschikbaar"
+        return out
+    try:
+        ev = await asyncio.wait_for(fn(), timeout=8.0)
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"get_contacts faalde: {e}"
+        return out
+    if ev is None:
+        out["error"] = "geen antwoord (timeout)"
+        return out
+    ev_type = getattr(ev, "type", None)
+    ev_type_str = getattr(ev_type, "value", str(ev_type))
+    out["ok"] = True
+    contacts = getattr(mc, "contacts", None)
+    if not isinstance(contacts, dict):
+        return out
+    out["total"] = len(contacts)
+    if not prune:
+        return out
+    if ev_type_str != "contacts":
+        # ERROR of iets onverwachts: lijst is mogelijk incompleet → niet prunen.
+        out["error"] = f"niet gepruned; onverwacht event: {ev_type_str}"
+        return out
+    payload = getattr(ev, "payload", None)
+    if not isinstance(payload, dict):
+        out["error"] = "niet gepruned; CONTACTS-payload was geen dict"
+        return out
+    fresh = set(payload.keys())
+    stale = [k for k in list(contacts.keys()) if k not in fresh]
+    for k in stale:
+        contacts.pop(k, None)
+    out["pruned"] = len(stale)
+    out["total"] = len(contacts)
+    if stale:
+        print(f"[*] contacten-cache: {len(stale)} verdwenen contact(en) opgeruimd "
+              f"({out['total']} over)")
+    return out
+
+
+def forget_contact_locally(mc, pubkey: str) -> bool:
+    """Gooi één contact uit de lokale cache, zonder de companion te bevragen.
+
+    Gebruikt direct na een bevestigde `remove_contact`: dan klopt het scherm
+    meteen, ook als de daaropvolgende refresh faalt.
+    """
+    contacts = getattr(mc, "contacts", None)
+    if not isinstance(contacts, dict) or not pubkey:
+        return False
+    pk = pubkey.lower()
+    for key in list(contacts.keys()):
+        if isinstance(key, str) and key.lower() == pk:
+            contacts.pop(key, None)
+            return True
+    return False
+
+
 async def refresh_repeater_cache(mc) -> None:
     """Refresh _known_repeaters uit mc.contacts.
     Roept get_contacts() aan om de cache up-to-date te houden."""
     cmds = getattr(mc, "commands", None)
     if cmds is None:
         return
-    fn = getattr(cmds, "get_contacts", None)
-    if fn is not None:
-        try:
-            await asyncio.wait_for(fn(), timeout=8.0)
-        except Exception:  # noqa: BLE001
-            pass  # cache blijft oude waardes — beter dan crash
+    # v1.1.057: via refresh_contacts() zodat verdwenen contacten óók uit
+    # mc.contacts verdwijnen — een kale get_contacts() laat ze staan.
+    try:
+        await refresh_contacts(mc, prune=True)
+    except Exception:  # noqa: BLE001
+        pass  # cache blijft oude waardes — beter dan crash
     contacts = getattr(mc, "contacts", None)
     if not isinstance(contacts, dict):
         return

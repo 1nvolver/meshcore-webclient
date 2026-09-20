@@ -1,6 +1,6 @@
 # Handoff — MeshCore Gateway Web Client
 
-Stand: versie 1.1.056. Deze notitie is bedoeld om het project in een nieuwe
+Stand: versie 1.1.057. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode staat in
 `github.com/1nvolver/meshcore-webclient` (branch `main`) — clone die repo,
 dan heb je alles. Voor de draaiende omgeving zie sectie 9.
@@ -271,6 +271,14 @@ vereist op enkele plekken conversie.
   zonder het resultaat te checken telt een mislukking als succes. Dat was
   precies de bug in v1.1.050 en eerder (zie CHANGELOG v1.1.051). Gebruik
   `_event_is_ok(ev)` in `web.py` voor elk nieuw commando dat je toevoegt.
+- **`mc.contacts` GROEIT alleen — de SDK verwijdert er nooit iets uit.**
+  `MeshCore._update_contacts` merget binnenkomende contacten in de dict en laat
+  sleutels die de companion niet meer meldt gewoon staan. Een `get_contacts()`
+  ruimt dus níéts op. Gebruik altijd `gateway.refresh_contacts(mc, prune=True)`
+  (pruned op basis van de CONTACTS-payload) en
+  `gateway.forget_contact_locally()` na een bevestigde verwijdering. Dit was de
+  hoofdoorzaak achter "verwijderde repeaters komen terug"; zie CHANGELOG
+  v1.1.057.
 - **`mc.contacts` is een cache, geen live view.** Hij wordt ververst door
   `repeater_cache_loop` in `gateway.py` (elke 5 min) en sinds v1.1.051 ook
   direct na een opruimronde via `_refresh_contacts_cache()`. Muteer je de
