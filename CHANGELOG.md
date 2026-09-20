@@ -2,7 +2,7 @@
 
 Per-versie wijzigingen, chronologisch (nieuwste onderaan).
 
-- **Huidige versie:** v1.1.054 (zie laatste sectie).
+- **Huidige versie:** v1.1.055 (zie laatste sectie).
 - **Voor architectuur, DB-schema, voltooide features en backlog:** zie `HANDOFF.md`.
 - **Voor end-user setup / deploy / update-procedure:** zie `README.md`.
 
@@ -1007,6 +1007,38 @@ Zeven gevallen, allemaal zoals bedoeld.
 
 **Blijft gelden:** een sync repareert bestaande `last_advert`-stempels niet.
 Die schuiven pas recht als elke node opnieuw geadverteerd heeft.
+
+### v1.1.055 — Housekeeping-UI: misleidende hint en leesbaarheid van de telling
+
+De kloksync uit v1.1.054 werkte (skew nu 1s), maar de user las de uitslag
+begrijpelijkerwijs verkeerd: "83 contacten, waarvan 30 met een tijd in de
+toekomst — dan moeten er toch 53 weg?"
+
+Nee: die 83 zijn **allemaal** jonger dan de drempel, en de 30 zijn daar een
+deelverzameling van. De UI presenteerde het als twee losse regels zonder dat
+verband, en de datumhint maakte het erger.
+
+**De hint loog.** `updateHint()` deed `Math.round(dagen)`, dus een drempel van
+0,74 dagen werd getoond als "(1 dagen geleden)". Dat las als *gisteren*,
+terwijl de grens in werkelijkheid vanochtend 00:00 lag. Nu toont 'ie de
+werkelijke grens plus de afstand in uren onder de twee dagen:
+`(grens = 20-9-2026 00:00, 17.8 uur geleden)`.
+
+**De telling leest nu als één verhaal.** "te recent voor deze drempel" is
+"jonger dan je drempel (en dus overgeslagen)", met de toekomst-regel eronder
+als ingesprongen subregel (`└ daarvan met een advert-tijd in de toekomst`).
+
+**Expliciete conclusie bij nul kandidaten.** Is zelfs de oudste advert jonger
+dan de drempel, dan staat er nu met zoveel woorden dat er niets op te ruimen
+valt en dat géén enkele kiesbare datum daar iets aan verandert — plus dat de
+tellingen geen aparte groepen zijn.
+
+**Stempels uit de scheve periode.** Loopt de klok inmiddels gelijk maar zijn
+er nog adverts uit de toekomst, dan legt de UI uit dat dat oude stempels zijn:
+de klok-fix werkt niet met terugwerkende kracht, elk contact krijgt pas een
+kloppende tijd bij zijn volgende advert.
+
+Geen wijziging in de selectielogica — dit is puur wat het scherm vertelt.
 
 ---
 

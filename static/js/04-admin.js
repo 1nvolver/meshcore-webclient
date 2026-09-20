@@ -307,10 +307,18 @@ function renderAdminHousekeeping(){
   const dateEl = $('hk-stale-date');
   const hintEl = $('hk-stale-days-hint');
   function updateHint(){
+    // v1.1.055: Math.round() maakte van een drempel van 0,74 dagen
+    // "(1 dagen geleden)" — dat las als "gisteren" terwijl de grens in
+    // werkelijkheid vanochtend 00:00 lag. Nu exact, en in uren als het
+    // minder dan twee dagen is.
     if (!dateEl.value) { hintEl.textContent = ''; return; }
     const picked = new Date(dateEl.value + 'T00:00:00');
-    const days = Math.max(0, Math.round((Date.now() - picked.getTime()) / 86400000));
-    hintEl.textContent = '(' + days + ' dagen geleden)';
+    const ms = Math.max(0, Date.now() - picked.getTime());
+    const days = ms / 86400000;
+    const txt = days < 2
+      ? '(grens = ' + picked.toLocaleDateString() + ' 00:00, ' + (ms / 3600000).toFixed(1) + ' uur geleden)'
+      : '(grens = ' + picked.toLocaleDateString() + ' 00:00, ' + days.toFixed(1) + ' dagen geleden)';
+    hintEl.textContent = txt;
   }
   dateEl.addEventListener('input', updateHint);
   updateHint();
@@ -397,9 +405,20 @@ function _renderClockWarning(clk, d){
            escapeHTML(clk.error || 'onbekend') + '</div>';
   }
   const skew = clk.skew_secs || 0;
-  if (Math.abs(skew) < 60 && !future) {
-    return '<div style="margin-top:8px;color:#888">Companion-klok loopt gelijk (' +
-           _fmtSkew(skew) + ' verschil).</div>';
+  if (Math.abs(skew) < 60) {
+    let out = '<div style="margin-top:8px;color:#888">Companion-klok loopt gelijk (' +
+              _fmtSkew(skew) + ' verschil).</div>';
+    if (future) {
+      // Klok is inmiddels goed, maar de opgeslagen stempels nog niet: die zijn
+      // gezet toen de klok scheef stond en schuiven pas recht bij een nieuwe advert.
+      out += '<div style="margin-top:8px;padding:8px;background:#fff3cd;border-radius:4px;color:#7a5b00">' +
+             '<b>' + future + ' contacten dragen nog een advert-tijd uit de periode dat de klok scheef stond.</b><br>' +
+             'De klok is nu goed, maar bestaande tijdstempels worden daar niet met terugwerkende kracht ' +
+             'door gecorrigeerd — elk contact krijgt pas een kloppende tijd bij zijn volgende advert. ' +
+             'Opschonen op datum is pas betrouwbaar als dat rondje geweest is (meestal enkele uren).' +
+             '</div>';
+    }
+    return out;
   }
   const richting = skew > 0 ? 'vóór' : 'achter';
   return '<div style="margin-top:10px;padding:8px;background:#fff3cd;border-radius:4px;color:#7a5b00">' +
@@ -440,17 +459,28 @@ function _renderStaleDiagnostics(data){
     ['afgevallen op type', d.skipped_type],
     ['overgeslagen als favoriet', d.skipped_favorite],
     ['zonder bekende advert-tijd', d.skipped_no_advert],
-    ['te recent voor deze drempel', d.skipped_too_recent],
-    ['waarvan met een advert-tijd in de TOEKOMST', d.skipped_future_advert],
+    ['jonger dan je drempel (en dus overgeslagen)', d.skipped_too_recent],
+    ['\u2514 daarvan met een advert-tijd in de toekomst', d.skipped_future_advert],
     ['onleesbare entries', d.skipped_bad_entry],
   ].filter(r => r[1]);
   let extra = '';
+  const thr = Math.round((data.age_days_threshold || 0) * 100) / 100;
   if (d.oldest_age_days != null) {
     extra = '<div style="margin-top:6px">Binnen de gekozen types is de oudste advert <b>' +
             d.oldest_age_days + ' dagen</b> oud, de nieuwste <b>' + d.newest_age_days +
-            ' dagen</b>. Je drempel staat op <b>' +
-            (Math.round((data.age_days_threshold || 0) * 100) / 100) + ' dagen</b>.</div>';
-    if (d.skipped_too_recent && d.oldest_age_days > (data.age_days_threshold || 0)) {
+            ' dagen</b>. Je drempel staat op <b>' + thr + ' dagen</b>.</div>';
+    // De meest voorkomende verwarring: "er zijn er 83, waarvan 30 raar — dan
+    // moeten er toch 53 weg?" Nee: die 83 zijn ALLEMAAL jonger dan de drempel,
+    // en de 30 zijn daar een deelverzameling van. Zeg dat expliciet.
+    if (!data.count && d.oldest_age_days <= thr) {
+      extra += '<div style="margin-top:6px;padding:6px;background:#eef4ff;border-radius:4px">' +
+               'Zelfs de <b>oudste</b> advert (' + d.oldest_age_days + ' dagen) is jonger dan je drempel (' +
+               thr + ' dagen). Er is dus niets om op te ruimen — geen enkele datum die je hier kunt ' +
+               'kiezen levert nu kandidaten op. De tellingen hierboven zijn geen aparte groepen: ' +
+               'alle ' + (d.skipped_too_recent || 0) + ' vallen onder dezelfde regel.' +
+               '</div>';
+    }
+    if (d.skipped_too_recent && d.oldest_age_days > thr) {
       extra += '<div style="margin-top:4px;color:#c33">Let op: er is wél iets ouder dan de drempel, ' +
                'maar het viel af op een andere regel — kijk naar de telling hierboven.</div>';
     }
