@@ -49,6 +49,7 @@ SQLAlchemy async + aiosqlite, uvicorn. Geen build-step; één venv.
 | `.github/workflows/ci.yml` | CI: job `checks` (py-ast, `node --check`, jinja render-smoke, `compose config`, APP_VERSION↔HANDOFF-sync) + job `build` (buildx → GHCR, `linux/amd64`, alleen push vanaf `main`/`v*`-tag). |
 | `.dockerignore` | Houdt DB, `.git`, docs en venv uit de build-context. |
 | `meshcore-gateway.service.example` | systemd-unit template (native installatie). |
+| `docs/` | Referentiedocs **overgenomen van upstream** (github.com/meshcore-dev/MeshCore): `cli_commands.md`, `companion_protocol.md`, `payloads.md`, `qr_codes.md`. Bron van waarheid voor repeater-CLI-syntax en protocol-details — raadplegen vóór je een commando-wrapper bouwt. Niet zelf bijhouden; ververs ze uit upstream. |
 | `README.md` | Volledige gebruikershandleiding (setup, container, systemd, caveats, update-procedure). |
 | `CHANGELOG.md` | Per-versie wijzigingen (chronologisch, append-only). Voorheen `HANDOFF new.md`. |
 | `requirements.txt` / `pyproject.toml` / `.python-version` | Deps; Python `>=3.12`. |
@@ -475,6 +476,7 @@ pullen → service restart.
 | **UI** | `http://homeserver:8180/` — host-poort 8180 → container-poort 8080 (8080 was op die host al bezet) |
 | **USB** | `/dev/ttyACM0`, `root:dialout`, dialout-GID 20 → `group_add: ["20"]` |
 | **Data** | named volume `meshcore-data` → `/data/meshcore.db` |
+| **Firmware** | repeaters én companion op **v1.17.1** (sinds 2026-09-20) |
 
 Aandachtspunten bij deze omgeving:
 
@@ -485,6 +487,11 @@ Aandachtspunten bij deze omgeving:
   `.gitignore` als `.dockerignore`, en er is nooit een `.db` gecommit
   (gecontroleerd met `git log --all -- '*.db'`). Houd dat zo: er zitten
   berichten, contacten en wachtwoord-hashes in.
+- **Firmware-afhankelijkheden zijn niet gepind.** De app praat met wat er op
+  de radio staat. Bij een firmware-upgrade zijn dit de plekken die stiekem
+  kunnen breken: de repeater-CLI-syntax (`gateway.py` / `05-reports.js`), de
+  `txt_type ≠ 0`-filter in `on_contact_msg`, en de RX_LOG-correlatie. Check
+  `docs/cli_commands.md` van de bijbehorende upstream-versie na een upgrade.
 - **Alleen `linux/amd64` wordt gebouwd.** Een Pi als target vereist de
   `platforms:`-uitbreiding uit sectie 8 item 4, of een lokale build.
 - **De werkmap hierboven is de enige geldige.** Een eerdere locatie op een
