@@ -43,7 +43,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 #   x = major (handmatig te bepalen)
 #   y = minor (handmatig te bepalen)
 #   z = dot-versie, bumpt bij elke door de gebruiker gevraagde wijziging
-APP_VERSION = "1.1.052"
+APP_VERSION = "1.1.053"
 
 # Module-logger; uvicorn pikt deze automatisch op via root-handlers (stdout,
 # systemd-journal, docker logs). Geen extra config nodig.
@@ -923,6 +923,72 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
 
     _TYPE_LABEL = {1: "client", 2: "repeater", 3: "room", 4: "sensor"}
 
+    async def _companion_clock_skew() -> dict:
+        """Vergelijk de klok van de companion met die van de gateway.
+
+        `last_advert` wordt door de companion gestempeld met zíjn klok, maar
+        wij vergelijken 'm met onze `time.time()`. Loopt de companion voor of
+        achter, dan klopt elke leeftijdsberekening niet — adverts lijken dan
+        uit de toekomst te komen (negatieve leeftijd) of veel te oud.
+
+        Returnt {ok, companion_epoch, host_epoch, skew_secs, skew_human}.
+        skew_secs > 0 = companion loopt vóór op de gateway.
+        """
+        out = {"ok": False, "companion_epoch": None, "host_epoch": int(_time.time()),
+               "skew_secs": None, "error": None}
+        fn = _resolve_cmd("get_time")
+        if fn is None:
+            out["error"] = "get_time niet beschikbaar in deze SDK-versie"
+            return out
+        try:
+            ev = await asyncio.wait_for(fn(), timeout=5.0)
+        except Exception as e:  # noqa: BLE001
+            out["error"] = f"uitlezen mislukt: {e}"
+            return out
+        if ev is None:
+            out["error"] = "geen antwoord van de companion (timeout)"
+            return out
+        payload = getattr(ev, "payload", None)
+        epoch = None
+        if isinstance(payload, dict):
+            for k in ("time", "epoch", "timestamp", "current_time"):
+                v = payload.get(k)
+                if isinstance(v, (int, float)) and v > 0:
+                    epoch = int(v)
+                    break
+        elif isinstance(payload, (int, float)):
+            epoch = int(payload)
+        if epoch is None:
+            out["error"] = f"onverwacht antwoord: {payload!r}"
+            return out
+        now = _time.time()
+        out.update({"ok": True, "companion_epoch": epoch, "host_epoch": int(now),
+                    "skew_secs": round(epoch - now, 1)})
+        return out
+
+    @app.get("/admin/companion/time")
+    async def admin_companion_time(request: Request):
+        _admin_or_403(request)
+        return await _companion_clock_skew()
+
+    @app.post("/admin/companion/time/sync")
+    async def admin_companion_time_sync(request: Request):
+        """Zet de companion-klok gelijk aan die van de gateway."""
+        _admin_or_403(request)
+        fn = _resolve_cmd("set_time")
+        if fn is None:
+            raise HTTPException(501, "set_time niet beschikbaar")
+        before = await _companion_clock_skew()
+        try:
+            ev = await asyncio.wait_for(fn(int(_time.time())), timeout=5.0)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(500, f"klok zetten faalde: {e}")
+        ok, why = _event_is_ok(ev)
+        after = await _companion_clock_skew() if ok else None
+        return {"ok": ok, "error": None if ok else why,
+                "before": before, "after": after,
+                "message": "companion-klok gelijkgezet" if ok else why}
+
     def _event_is_ok(ev) -> tuple[bool, str]:
         """Beoordeel het Event dat een companion-commando teruggeeft.
 
@@ -988,6 +1054,12 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             "skipped_favorite": 0,
             "skipped_no_advert": 0,
             "skipped_too_recent": 0,
+            # v1.1.053: adverts met een tijdstempel in de TOEKOMST. Die zijn
+            # per definitie "te recent" en vielen daardoor stilzwijgend in de
+            # skipped_too_recent-bak — terwijl ze in werkelijkheid betekenen
+            # dat de klok van de companion niet klopt. Apart tellen, want de
+            # oplossing is een klok-sync, niet een andere drempel.
+            "skipped_future_advert": 0,
             "newest_age_days": None,
             "oldest_age_days": None,
         }
@@ -1014,6 +1086,10 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
                 continue
             age = now_ts - last_adv
             ages_in_scope.append(age)
+            if age < 0:
+                stats["skipped_future_advert"] += 1
+                stats["skipped_too_recent"] += 1
+                continue
             if age <= age_secs:
                 stats["skipped_too_recent"] += 1
                 continue
@@ -1030,6 +1106,9 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
         if ages_in_scope:
             stats["newest_age_days"] = round(min(ages_in_scope) / 86400, 2)
             stats["oldest_age_days"] = round(max(ages_in_scope) / 86400, 2)
+        # Klok-skew erbij: als de companion-klok voorloopt, zijn álle
+        # advert-tijden verschoven en is geen enkele drempel zinnig.
+        stats["clock"] = await _companion_clock_skew()
         return out, stats
 
     def _parse_stale_params(

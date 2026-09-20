@@ -2,7 +2,7 @@
 
 Per-versie wijzigingen, chronologisch (nieuwste onderaan).
 
-- **Huidige versie:** v1.1.052 (zie laatste sectie).
+- **Huidige versie:** v1.1.053 (zie laatste sectie).
 - **Voor architectuur, DB-schema, voltooide features en backlog:** zie `HANDOFF.md`.
 - **Voor end-user setup / deploy / update-procedure:** zie `README.md`.
 
@@ -911,6 +911,54 @@ repeater, room, client, favoriet, `last_advert=0`, `last_advert=None`) bij
 vier drempels. Kandidaten én tellingen kloppen in alle vier de gevallen.
 
 Geen gedragswijziging in de selectie zelf — alleen zichtbaarheid.
+
+### v1.1.053 — De echte oorzaak: de companion-klok loopt voor
+
+De diagnostiek uit v1.1.052 gaf het antwoord in één klik:
+
+```
+contacten op de companion: 83
+te recent voor deze drempel: 83
+oudste advert 0.68 dagen oud, nieuwste -2.25 dagen
+```
+
+Een **negatieve** leeftijd betekent een advert-tijdstempel in de toekomst.
+`last_advert` wordt door de companion gestempeld met zíjn klok, terwijl de
+leeftijd hier tegen `time.time()` van de gateway berekend wordt. De
+companion liep ruim twee dagen vóór (waarschijnlijk een RTC-reset bij de
+firmware-upgrade naar 1.17.1), dus élke advert schoof mee naar voren en geen
+enkele drempel kon ooit iets selecteren. Niet de opruimlogica was stuk — de
+tijdbasis was dat.
+
+**`web.py`:**
+- `_companion_clock_skew()` leest de companion-klok via `get_time()` en zet
+   'm af tegen de host-tijd. Returnt `{ok, companion_epoch, host_epoch,
+  skew_secs, error}`; positieve skew = companion loopt vóór.
+- `GET /admin/companion/time` — uitlezen.
+- `POST /admin/companion/time/sync` — `set_time(now)`, met een voor/na-meting
+  in de respons zodat je ziet of het geholpen heeft.
+- De stale-diagnostiek telt `skipped_future_advert` apart. Die vielen tot nu
+  toe stilzwijgend in de `skipped_too_recent`-bak, terwijl de oplossing een
+  klok-sync is en niet een andere datum.
+- De diagnostiek bevat nu ook `clock` met de skew-meting.
+
+**`04-admin.js`:** bij een skew > 60s (of adverts uit de toekomst) verschijnt
+een gele waarschuwing met de gemeten afwijking en een knop
+"Zet de companion-klok gelijk". Bij een normale skew staat er één regel dat
+de klok gelijkloopt.
+
+**Belangrijk en expliciet in de bevestiging gezet:** een klok-sync corrigeert
+**bestaande** `last_advert`-stempels niet. Die blijven verschoven tot elke
+node opnieuw geadverteerd heeft (meestal enkele uren). Opschonen op datum is
+pas weer betrouwbaar als dat gebeurd is.
+
+**Geverifieerd:** `_companion_clock_skew` geëxtraheerd uit `web.py` en
+gedraaid tegen echte `meshcore.events.Event`-objecten: gelijklopend, 2.25
+dagen vóór, een uur achter, alternatieve payload-key, onleesbare payload,
+time-out, exception, en een SDK zonder `get_time`. Alle acht correct.
+
+**Nog te bevestigen door de user:** of de skew inderdaad ~2.25 dagen meet en
+of `set_time` door firmware 1.17.1 geaccepteerd wordt.
 
 ---
 

@@ -1,6 +1,6 @@
 # Handoff — MeshCore Gateway Web Client
 
-Stand: versie 1.1.052. Deze notitie is bedoeld om het project in een nieuwe
+Stand: versie 1.1.053. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode staat in
 `github.com/1nvolver/meshcore-webclient` (branch `main`) — clone die repo,
 dan heb je alles. Voor de draaiende omgeving zie sectie 9.
@@ -274,6 +274,15 @@ vereist op enkele plekken conversie.
   direct na een opruimronde via `_refresh_contacts_cache()`. Muteer je de
   contactenlijst op de companion, ververs 'm dan expliciet — anders leest de
   UI minutenlang achterhaalde data en lijkt de actie niet gewerkt te hebben.
+- **`last_advert` komt van de klok van de COMPANION, niet van de gateway.**
+  Alle leeftijdsberekeningen (housekeeping, het repeater-overzicht) zetten dat
+  af tegen `time.time()` van de host. Loopt de companion voor of achter, dan
+  schuiven álle leeftijden mee en kan een advert zelfs in de toekomst liggen
+  (negatieve leeftijd → telt als "te recent" → niets is ooit stale). Dat is
+  precies wat er na de firmware-upgrade naar 1.17.1 gebeurde; zie CHANGELOG
+  v1.1.053. Sinds die versie meet `_companion_clock_skew()` het verschil en
+  waarschuwt de UI. Een klok-sync repareert **bestaande** tijdstempels niet —
+  die blijven scheef tot elke node opnieuw geadverteerd heeft.
 - **Bot-cache TTL 30s**: admin-wijzigingen aan bots zijn pas na ≤30s actief.
 - **In-memory sessies**, geen CSRF, geen rate-limiting op `/login`. Acceptabel
   voor home-LAN, niet voor blootstelling op internet. Cookie is sinds v1.1.047

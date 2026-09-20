@@ -321,6 +321,58 @@ function _hkStaleParams(){
   };
 }
 
+// Klok-skew. last_advert wordt door de companion gestempeld met ZIJN klok,
+// terwijl wij de leeftijd berekenen tegen onze eigen tijd. Loopt de companion
+// voor, dan komen adverts 'uit de toekomst' en is geen enkele drempel zinnig.
+function _fmtSkew(secs){
+  const a = Math.abs(secs);
+  if (a < 90)    return Math.round(a) + ' seconden';
+  if (a < 5400)  return Math.round(a/60) + ' minuten';
+  if (a < 172800) return (a/3600).toFixed(1) + ' uur';
+  return (a/86400).toFixed(2) + ' dagen';
+}
+
+function _renderClockWarning(clk, d){
+  const future = d && d.skipped_future_advert;
+  if (!clk) {
+    return future ? '<div style="margin-top:8px;color:#c33"><b>' + future +
+      ' contacten hebben een advert-tijd in de toekomst.</b> Dat kan alleen als de klok ' +
+      'van de companion niet gelijkloopt met die van de gateway.</div>' : '';
+  }
+  if (!clk.ok) {
+    return '<div style="margin-top:8px;color:#888">Companion-klok kon niet uitgelezen worden: ' +
+           escapeHTML(clk.error || 'onbekend') + '</div>';
+  }
+  const skew = clk.skew_secs || 0;
+  if (Math.abs(skew) < 60 && !future) {
+    return '<div style="margin-top:8px;color:#888">Companion-klok loopt gelijk (' +
+           _fmtSkew(skew) + ' verschil).</div>';
+  }
+  const richting = skew > 0 ? 'vóór' : 'achter';
+  return '<div style="margin-top:10px;padding:8px;background:#fff3cd;border-radius:4px;color:#7a5b00">' +
+         '<b>De klok van de companion loopt ' + _fmtSkew(skew) + ' ' + richting + '</b> op die van de gateway.<br>' +
+         'Advert-tijden worden door de companion gestempeld, dus alle leeftijden in dit scherm ' +
+         'zijn met datzelfde bedrag verschoven. Zolang dit zo staat, is opschonen op datum zinloos.' +
+         '<div style="margin-top:8px"><button onclick="syncCompanionClock()">Zet de companion-klok gelijk</button></div>' +
+         '</div>';
+}
+
+async function syncCompanionClock(){
+  if (!confirm('De klok van de companion gelijkzetten aan die van de gateway?\n\n' +
+               'Let op: bestaande advert-tijdstempels worden hier NIET door gecorrigeerd — ' +
+               'die blijven verschoven tot elke node opnieuw geadverteerd heeft.')) return;
+  let res;
+  try { res = await api('/admin/companion/time/sync', {method:'POST', body:'{}'}); }
+  catch(e) { return; }
+  if (res.ok) {
+    const na = res.after && res.after.skew_secs;
+    toast('klok gelijkgezet' + (na != null ? ' (rest-verschil ' + _fmtSkew(na) + ')' : ''), 'ok');
+  } else {
+    toast(res.error || 'klok zetten mislukt', 'err');
+  }
+  loadStaleContacts();
+}
+
 // Waarom vielen er contacten af? Zonder dit is "0 kandidaten" niet te
 // onderscheiden van een kapotte filter.
 function _renderStaleDiagnostics(data){
@@ -332,6 +384,7 @@ function _renderStaleDiagnostics(data){
     ['overgeslagen als favoriet', d.skipped_favorite],
     ['zonder bekende advert-tijd', d.skipped_no_advert],
     ['te recent voor deze drempel', d.skipped_too_recent],
+    ['waarvan met een advert-tijd in de TOEKOMST', d.skipped_future_advert],
     ['onleesbare entries', d.skipped_bad_entry],
   ].filter(r => r[1]);
   let extra = '';
@@ -351,7 +404,7 @@ function _renderStaleDiagnostics(data){
   return '<div class="note" style="margin-top:8px;padding:8px;background:#f7f7f7;border-radius:4px">' +
          '<b>Waarom niets?</b><ul style="margin:6px 0 0 18px;padding:0">' +
          rows.map(r => '<li>' + r[0] + ': <b>' + r[1] + '</b></li>').join('') +
-         '</ul>' + extra + '</div>';
+         '</ul>' + extra + _renderClockWarning(d.clock, d) + '</div>';
 }
 
 async function loadStaleContacts(){
