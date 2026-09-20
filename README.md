@@ -325,6 +325,11 @@ services:
       TZ: Europe/Amsterdam
       # MESHCORE_BAUD: "115200"
       # MESHCORE_DEBUG: "1"
+      # Kloksync met de companion (v1.1.054). Defaults staan in de image;
+      # zet ze hier alleen als je wilt afwijken.
+      # MESHCORE_TIME_SYNC: "1"            # 0 = automatische sync uit
+      # MESHCORE_TIME_SYNC_INTERVAL: "21600"   # seconden tussen controles (6u)
+      # MESHCORE_TIME_SYNC_THRESHOLD: "30"     # vanaf hoeveel seconden afwijking bijstellen
 
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status == 200 else 1)"]
@@ -348,7 +353,7 @@ Dit bestand staat ook als `portainer-stack.yml` in de repo.
 
 Wil je een vaste versie draaien in plaats van `latest`, zet dan onderaan het
 stack-formulier bij *Environment variables* een variabele `MESHCORE_TAG` met
-bijvoorbeeld `1.1.049`. Aanrader voor productie: dan bepaal jij wanneer je
+bijvoorbeeld `1.1.054`. Aanrader voor productie: dan bepaal jij wanneer je
 update, in plaats van "wat er toevallig als latest staat".
 
 ### Stap 4 — deployen en eerste login
@@ -485,10 +490,10 @@ Er zijn **geen secrets nodig**: de workflow logt in op GHCR met de automatische
 Tags die vanaf `main` gepusht worden:
 
 - `latest` — laatste main-build
-- `1.1.049` — de `APP_VERSION` uit `web.py`
+- `1.1.054` — de `APP_VERSION` uit `web.py`
 - `sha-<short>` — exacte commit
 
-Push je een git-tag `v1.1.049`, dan komt die tagnaam er ook bij.
+Push je een git-tag `v1.1.054`, dan komt die tagnaam er ook bij.
 
 **Eenmalig na de allereerste build:** het package wordt als *private*
 aangemaakt. GitHub → Packages → `meshcore-webclient` → *Package settings* →

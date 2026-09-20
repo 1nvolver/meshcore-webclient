@@ -36,6 +36,11 @@ services:
       MESHCORE_PORT: /dev/ttyACM0
       # MESHCORE_WEB_PORT: "8080"
       # MESHCORE_DEBUG: "1"
+      # Kloksync met de companion (v1.1.054). Defaults staan in de image;
+      # zet ze hier alleen als je wilt afwijken.
+      # MESHCORE_TIME_SYNC: "1"            # 0 = automatische sync uit
+      # MESHCORE_TIME_SYNC_INTERVAL: "21600"   # seconden tussen controles (6u)
+      # MESHCORE_TIME_SYNC_THRESHOLD: "30"     # vanaf hoeveel seconden afwijking bijstellen
 
     # CPU/memory limits voor een Pi (optioneel)
     # mem_limit: 512m

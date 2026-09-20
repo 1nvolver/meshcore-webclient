@@ -6,7 +6,7 @@
 # image dat GitHub Actions heeft gepusht.
 #
 # Image:  ghcr.io/1nvolver/meshcore-webclient
-# Tags:   latest (= laatste main-build) | 1.1.049 (vaste versie) | sha-abc1234
+# Tags:   latest (= laatste main-build) | 1.1.054 (vaste versie) | sha-abc1234
 #
 # Pin bij voorkeur een vaste versie-tag in productie, dan bepaal jij wanneer
 # je update in plaats van "wat er toevallig als latest staat".
@@ -48,6 +48,11 @@ services:
       # MESHCORE_DEBUG: "1"
       # Watchdog: na N mislukte checks exit met code 75 → restart-policy pakt 'm op.
       # MESHCORE_WATCHDOG_HARD_FAIL: "5"
+      # Kloksync met de companion (v1.1.054). Defaults staan in de image;
+      # zet ze hier alleen als je wilt afwijken.
+      # MESHCORE_TIME_SYNC: "1"            # 0 = automatische sync uit
+      # MESHCORE_TIME_SYNC_INTERVAL: "21600"   # seconden tussen controles (6u)
+      # MESHCORE_TIME_SYNC_THRESHOLD: "30"     # vanaf hoeveel seconden afwijking bijstellen
       TZ: Europe/Amsterdam
 
     healthcheck:
