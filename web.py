@@ -43,7 +43,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 #   x = major (handmatig te bepalen)
 #   y = minor (handmatig te bepalen)
 #   z = dot-versie, bumpt bij elke door de gebruiker gevraagde wijziging
-APP_VERSION = "1.1.053"
+APP_VERSION = "1.1.054"
 
 # Module-logger; uvicorn pikt deze automatisch op via root-handlers (stdout,
 # systemd-journal, docker logs). Geen extra config nodig.
@@ -924,70 +924,44 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
     _TYPE_LABEL = {1: "client", 2: "repeater", 3: "room", 4: "sensor"}
 
     async def _companion_clock_skew() -> dict:
-        """Vergelijk de klok van de companion met die van de gateway.
-
-        `last_advert` wordt door de companion gestempeld met zíjn klok, maar
-        wij vergelijken 'm met onze `time.time()`. Loopt de companion voor of
-        achter, dan klopt elke leeftijdsberekening niet — adverts lijken dan
-        uit de toekomst te komen (negatieve leeftijd) of veel te oud.
-
-        Returnt {ok, companion_epoch, host_epoch, skew_secs, skew_human}.
-        skew_secs > 0 = companion loopt vóór op de gateway.
+        """Skew-meting. De implementatie staat in `gateway.py` omdat de
+        sync-loop daar draait — één bron van waarheid, geen tweede kopie die
+        uit de pas kan lopen. Late import om circulaire imports te vermijden.
         """
-        out = {"ok": False, "companion_epoch": None, "host_epoch": int(_time.time()),
-               "skew_secs": None, "error": None}
-        fn = _resolve_cmd("get_time")
-        if fn is None:
-            out["error"] = "get_time niet beschikbaar in deze SDK-versie"
-            return out
-        try:
-            ev = await asyncio.wait_for(fn(), timeout=5.0)
-        except Exception as e:  # noqa: BLE001
-            out["error"] = f"uitlezen mislukt: {e}"
-            return out
-        if ev is None:
-            out["error"] = "geen antwoord van de companion (timeout)"
-            return out
-        payload = getattr(ev, "payload", None)
-        epoch = None
-        if isinstance(payload, dict):
-            for k in ("time", "epoch", "timestamp", "current_time"):
-                v = payload.get(k)
-                if isinstance(v, (int, float)) and v > 0:
-                    epoch = int(v)
-                    break
-        elif isinstance(payload, (int, float)):
-            epoch = int(payload)
-        if epoch is None:
-            out["error"] = f"onverwacht antwoord: {payload!r}"
-            return out
-        now = _time.time()
-        out.update({"ok": True, "companion_epoch": epoch, "host_epoch": int(now),
-                    "skew_secs": round(epoch - now, 1)})
-        return out
+        import gateway as _gw
+        return await _gw.read_companion_clock(mc)
 
     @app.get("/admin/companion/time")
     async def admin_companion_time(request: Request):
         _admin_or_403(request)
-        return await _companion_clock_skew()
+        import gateway as _gw
+        out = await _gw.read_companion_clock(mc)
+        # Wat de achtergrond-loop het laatst gedaan heeft, zodat de UI kan
+        # laten zien dát er automatisch gesynct wordt en met welke instelling.
+        out["auto_sync"] = {
+            "enabled": _gw.TIME_SYNC_ENABLED,
+            "interval_secs": _gw.TIME_SYNC_INTERVAL_SECS,
+            "threshold_secs": _gw.TIME_SYNC_THRESHOLD_SECS,
+            "last": _gw.last_time_sync(),
+        }
+        return out
 
     @app.post("/admin/companion/time/sync")
     async def admin_companion_time_sync(request: Request):
-        """Zet de companion-klok gelijk aan die van de gateway."""
+        """Handmatige sync. Forceert, ook binnen de drempel — als een user
+        hier klikt wil die dat het nú gebeurt."""
         _admin_or_403(request)
-        fn = _resolve_cmd("set_time")
-        if fn is None:
-            raise HTTPException(501, "set_time niet beschikbaar")
-        before = await _companion_clock_skew()
-        try:
-            ev = await asyncio.wait_for(fn(int(_time.time())), timeout=5.0)
-        except Exception as e:  # noqa: BLE001
-            raise HTTPException(500, f"klok zetten faalde: {e}")
-        ok, why = _event_is_ok(ev)
-        after = await _companion_clock_skew() if ok else None
-        return {"ok": ok, "error": None if ok else why,
-                "before": before, "after": after,
-                "message": "companion-klok gelijkgezet" if ok else why}
+        import gateway as _gw
+        res = await _gw.check_and_sync_clock(mc, force=True)
+        sync = res.get("synced") or {}
+        ok = bool(sync.get("ok"))
+        return {
+            "ok": ok,
+            "error": None if ok else (sync.get("error") or (res.get("checked") or {}).get("error")),
+            "before": sync.get("before") or res.get("checked"),
+            "after": sync.get("after"),
+            "message": "companion-klok gelijkgezet" if ok else (sync.get("error") or "sync mislukt"),
+        }
 
     def _event_is_ok(ev) -> tuple[bool, str]:
         """Beoordeel het Event dat een companion-commando teruggeeft.

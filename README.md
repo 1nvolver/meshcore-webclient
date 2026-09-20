@@ -622,6 +622,9 @@ uv run gateway.py --reset-admin
 | `MESHCORE_WEB`           | `1`           | Webserver aan/uit. Zet op `0`/`false` om alleen CLI te draaien.               |
 | `MESHCORE_WEB_HOST`      | `127.0.0.1`   | Bind-host. `0.0.0.0` voor LAN-toegang.                                        |
 | `MESHCORE_WEB_PORT`      | `8080`        | TCP-poort van de webserver.                                                   |
+| `MESHCORE_TIME_SYNC`     | `1`           | Periodieke kloksync met de companion. `0` zet 'm uit.                         |
+| `MESHCORE_TIME_SYNC_INTERVAL` | `21600`  | Seconden tussen klok-controles (default 6 uur).                               |
+| `MESHCORE_TIME_SYNC_THRESHOLD` | `30`    | Vanaf hoeveel seconden afwijking de klok bijgesteld wordt.                    |
 | `MESHCORE_DEBUG`         | leeg          | Op `1` zetten om alle binnenkomende meshcore-events naar de console te loggen.|
 |                          |               | Handig voor diagnose, vooral van `RX_LOG_DATA`.                               |
 

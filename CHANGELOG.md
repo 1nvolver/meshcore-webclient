@@ -2,7 +2,7 @@
 
 Per-versie wijzigingen, chronologisch (nieuwste onderaan).
 
-- **Huidige versie:** v1.1.053 (zie laatste sectie).
+- **Huidige versie:** v1.1.054 (zie laatste sectie).
 - **Voor architectuur, DB-schema, voltooide features en backlog:** zie `HANDOFF.md`.
 - **Voor end-user setup / deploy / update-procedure:** zie `README.md`.
 
@@ -959,6 +959,54 @@ time-out, exception, en een SDK zonder `get_time`. Alle acht correct.
 
 **Nog te bevestigen door de user:** of de skew inderdaad ~2.25 dagen meet en
 of `set_time` door firmware 1.17.1 geaccepteerd wordt.
+
+### v1.1.054 — Periodieke kloksync met de companion
+
+Vervolg op v1.1.053: niet alleen meten en waarschuwen, maar het probleem
+structureel wegnemen.
+
+**`gateway.py`** krijgt `time_sync_loop()`, naast de bestaande
+`repeater_cache_loop`. Bij start en daarna elke 6 uur wordt de companion-klok
+uitgelezen en alleen bijgesteld als de afwijking boven de drempel komt.
+
+| Env-var | Default | Betekenis |
+|---|---|---|
+| `MESHCORE_TIME_SYNC` | `1` | loop aan/uit |
+| `MESHCORE_TIME_SYNC_INTERVAL` | `21600` (6u) | interval tussen controles |
+| `MESHCORE_TIME_SYNC_THRESHOLD` | `30` | vanaf welke afwijking (s) er geschreven wordt |
+
+**Waarom een drempel en niet elke ronde blind schrijven:** `set_time` is
+USB-verkeer en raakt de RTC van de radio. Een paar seconden drift doet geen
+kwaad; alleen echte scheefstand corrigeren houdt het rustig.
+
+**Sanity-guard op onze eigen klok.** Draait de gateway in een container die
+zelf nog geen tijd heeft (geen RTC, NTP nog niet binnen), dan zou een sync de
+radio juist kapot zetten. `set_companion_clock()` weigert daarom te schrijven
+als de host-tijd vóór 2026-01-01 ligt. Zonder die guard maakt een
+herstartende Pi zonder RTC het bij elke boot erger.
+
+**Eén implementatie.** `read_companion_clock` / `set_companion_clock` /
+`check_and_sync_clock` staan in `gateway.py`; `web.py` importeert ze laat
+(zoals het al deed voor andere gateway-helpers) in plaats van een tweede
+kopie te onderhouden die uit de pas kan lopen.
+
+**`web.py`:** `/admin/companion/time` geeft nu ook `auto_sync` mee (aan/uit,
+interval, drempel, en wat de loop het laatst deed). De handmatige knop
+forceert, ook binnen de drempel — wie klikt wil dat het nú gebeurt.
+
+**UI:** Admin → Radio heeft een **Klok**-sectie met de gemeten afwijking, de
+tijd van beide kanten, de auto-sync-instelling en de laatste check. Knoppen
+"Nu gelijkzetten" en "Opnieuw uitlezen".
+
+**Geverifieerd** tegen een nagebootste companion: gelijk (geen schrijfactie),
+10s afwijking (geen schrijfactie — onder de drempel), 2,25 dagen vóór
+(gecorrigeerd), een uur achter (gecorrigeerd), binnen de drempel mét force
+(gecorrigeerd), firmware die `set_time` weigert (nette foutmelding), en een
+onbetrouwbare host-klok (weigert te schrijven, nul `set_time`-calls).
+Zeven gevallen, allemaal zoals bedoeld.
+
+**Blijft gelden:** een sync repareert bestaande `last_advert`-stempels niet.
+Die schuiven pas recht als elke node opnieuw geadverteerd heeft.
 
 ---
 

@@ -516,6 +516,162 @@ async def refresh_repeater_cache(mc) -> None:
     _known_repeaters.update(new_lookup)
 
 
+# ===================== Companion-klok (v1.1.054) =====================
+# `last_advert` en andere tijdstempels worden door de COMPANION gestempeld,
+# maar alle leeftijdsberekeningen in de app gebruiken onze eigen klok. Loopt
+# de companion uit de pas (RTC-reset na een firmware-upgrade, lege buffer-cap
+# na stroomloos staan), dan klopt er niets meer van: adverts kunnen zelfs in
+# de toekomst liggen. Zie CHANGELOG v1.1.053.
+#
+# Daarom: bij connect en daarna periodiek de klok controleren en alleen
+# bijstellen als de afwijking boven de drempel komt. Niet élke ronde blind
+# schrijven — dat is nodeloos USB-verkeer en flash-slijtage.
+
+TIME_SYNC_ENABLED = os.environ.get("MESHCORE_TIME_SYNC", "1") not in ("0", "false", "no")
+TIME_SYNC_INTERVAL_SECS = int(os.environ.get("MESHCORE_TIME_SYNC_INTERVAL", str(6 * 3600)))
+TIME_SYNC_THRESHOLD_SECS = int(os.environ.get("MESHCORE_TIME_SYNC_THRESHOLD", "30"))
+
+# Ondergrens-sanity: als ONZE klok overduidelijk niet gezet is (container zonder
+# RTC/NTP), mogen we 'm niet naar de radio schrijven — dan maken we het erger.
+# 2026-01-01; ruim vóór de bouwdatum van deze code, ruim ná elke plausibele
+# "klok staat op epoch 0"-situatie.
+HOST_CLOCK_SANITY_EPOCH = 1767225600
+
+# Laatste meting/sync, zodat de web-UI kan tonen wat de loop gedaan heeft.
+_last_time_sync: dict = {
+    "checked_at": None, "skew_secs": None, "synced_at": None,
+    "last_result": None, "error": None,
+}
+
+
+def last_time_sync() -> dict:
+    """Snapshot van wat de sync-loop het laatst gedaan heeft (voor de web-UI)."""
+    return dict(_last_time_sync)
+
+
+async def read_companion_clock(mc) -> dict:
+    """Lees de companion-klok en zet 'm af tegen de onze.
+
+    Returnt {ok, companion_epoch, host_epoch, skew_secs, error}.
+    skew_secs > 0 betekent: de companion loopt vóór op ons.
+    """
+    out = {"ok": False, "companion_epoch": None, "host_epoch": int(_time.time()),
+           "skew_secs": None, "error": None}
+    cmds = getattr(mc, "commands", None)
+    fn = getattr(cmds, "get_time", None) if cmds is not None else None
+    if not callable(fn):
+        out["error"] = "get_time niet beschikbaar in deze SDK-versie"
+        return out
+    try:
+        ev = await asyncio.wait_for(fn(), timeout=5.0)
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"uitlezen mislukt: {e}"
+        return out
+    if ev is None:
+        out["error"] = "geen antwoord van de companion (timeout)"
+        return out
+    payload = getattr(ev, "payload", None)
+    epoch = None
+    if isinstance(payload, dict):
+        for k in ("time", "epoch", "timestamp", "current_time"):
+            v = payload.get(k)
+            if isinstance(v, (int, float)) and v > 0:
+                epoch = int(v)
+                break
+    elif isinstance(payload, (int, float)):
+        epoch = int(payload)
+    if epoch is None:
+        out["error"] = f"onverwacht antwoord: {payload!r}"
+        return out
+    now = _time.time()
+    out.update({"ok": True, "companion_epoch": epoch, "host_epoch": int(now),
+                "skew_secs": round(epoch - now, 1)})
+    return out
+
+
+async def set_companion_clock(mc) -> dict:
+    """Zet de companion-klok op onze tijd. Returnt {ok, error, before, after}."""
+    before = await read_companion_clock(mc)
+    now = _time.time()
+    if now < HOST_CLOCK_SANITY_EPOCH:
+        return {"ok": False, "before": before, "after": None,
+                "error": ("de klok van de gateway zelf lijkt niet gezet "
+                          f"({int(now)}) — weigeren om die naar de radio te schrijven")}
+    cmds = getattr(mc, "commands", None)
+    fn = getattr(cmds, "set_time", None) if cmds is not None else None
+    if not callable(fn):
+        return {"ok": False, "before": before, "after": None,
+                "error": "set_time niet beschikbaar in deze SDK-versie"}
+    try:
+        ev = await asyncio.wait_for(fn(int(now)), timeout=5.0)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "before": before, "after": None, "error": f"set_time faalde: {e}"}
+    if ev is None:
+        return {"ok": False, "before": before, "after": None,
+                "error": "geen antwoord van de companion (timeout)"}
+    ev_type = getattr(ev, "type", None)
+    ev_type_str = getattr(ev_type, "value", str(ev_type))
+    if ev_type_str != "command_ok":
+        return {"ok": False, "before": before, "after": None,
+                "error": f"companion weigerde set_time ({ev_type_str})"}
+    after = await read_companion_clock(mc)
+    return {"ok": True, "before": before, "after": after, "error": None}
+
+
+async def check_and_sync_clock(mc, *, force: bool = False) -> dict:
+    """Eén controle-ronde. Stelt alleen bij als |skew| > drempel (of force)."""
+    res = await read_companion_clock(mc)
+    _last_time_sync["checked_at"] = int(_time.time())
+    _last_time_sync["skew_secs"] = res.get("skew_secs")
+    _last_time_sync["error"] = res.get("error")
+    if not res.get("ok"):
+        _last_time_sync["last_result"] = "leesfout"
+        return {"checked": res, "synced": None}
+    skew = res.get("skew_secs") or 0
+    if not force and abs(skew) <= TIME_SYNC_THRESHOLD_SECS:
+        _last_time_sync["last_result"] = "binnen drempel"
+        return {"checked": res, "synced": None}
+    sync = await set_companion_clock(mc)
+    if sync.get("ok"):
+        _last_time_sync["synced_at"] = int(_time.time())
+        _last_time_sync["last_result"] = f"bijgesteld ({skew:+.0f}s)"
+        rest = (sync.get("after") or {}).get("skew_secs")
+        print(f"[*] companion-klok bijgesteld: afwijking was {skew:+.0f}s, nu {rest}s")
+    else:
+        _last_time_sync["last_result"] = "sync mislukt"
+        _last_time_sync["error"] = sync.get("error")
+        print(f"[!] companion-klok bijstellen mislukt: {sync.get('error')}")
+    return {"checked": res, "synced": sync}
+
+
+async def time_sync_loop(mc, stop: asyncio.Event) -> None:
+    """Bij start en daarna elke TIME_SYNC_INTERVAL_SECS de klok controleren."""
+    if not TIME_SYNC_ENABLED:
+        print("[*] companion-kloksync uit (MESHCORE_TIME_SYNC=0)")
+        return
+    try:
+        first = await check_and_sync_clock(mc)
+        chk = first.get("checked") or {}
+        if chk.get("ok"):
+            print(f"[*] companion-klok: afwijking {chk.get('skew_secs')}s "
+                  f"(drempel {TIME_SYNC_THRESHOLD_SECS}s, interval "
+                  f"{TIME_SYNC_INTERVAL_SECS//3600}h)")
+        else:
+            print(f"[!] companion-klok niet uitleesbaar: {chk.get('error')}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[!] kloksync-start mislukt: {e}")
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=float(TIME_SYNC_INTERVAL_SECS))
+            return
+        except asyncio.TimeoutError:
+            pass
+        try:
+            await check_and_sync_clock(mc)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 async def repeater_cache_loop(mc, stop: asyncio.Event) -> None:
     """Periodiek (elke 5 min) de repeater-cache verversen."""
     await refresh_repeater_cache(mc)
@@ -1634,6 +1790,7 @@ async def main() -> int:
     stop_task = asyncio.create_task(stop.wait())
     wd_task = asyncio.create_task(watchdog(mc, stop))
     rc_task = asyncio.create_task(repeater_cache_loop(mc, stop))
+    ts_task = asyncio.create_task(time_sync_loop(mc, stop))
 
     # Webserver — aan tenzij expliciet uitgezet met MESHCORE_WEB=0.
     web_task: Optional[asyncio.Task] = None
@@ -1704,7 +1861,7 @@ async def main() -> int:
                 pass
 
     # CLI-task (alleen als TTY), watchdog, repeater-cache cancellen
-    bg_tasks = [wd_task, rc_task]
+    bg_tasks = [wd_task, rc_task, ts_task]
     if cli_task is not None:
         bg_tasks.append(cli_task)
     for t in bg_tasks:

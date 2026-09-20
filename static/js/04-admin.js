@@ -37,6 +37,17 @@ function renderAdminRadio(){
         <span class="note">experimenteel — alle nodes in mesh moeten gelijk zijn</span>
       </div>
     </section>
+    <section><h2>Klok</h2>
+      <div class="note" style="margin-bottom:8px">
+        Advert- en berichttijden worden door de companion gestempeld. Loopt zijn klok
+        uit de pas met de gateway, dan kloppen alle leeftijden niet — zie housekeeping.
+      </div>
+      <div class="kv" id="adm-clock">…uitlezen…</div>
+      <div class="row" style="margin-top:8px">
+        <button onclick="syncCompanionClock()">Nu gelijkzetten</button>
+        <button class="sec" onclick="loadCompanionClock()">Opnieuw uitlezen</button>
+      </div>
+    </section>
 
     <section><h2>Advert verzenden</h2>
       <div class="row">
@@ -71,6 +82,7 @@ function renderAdminRadio(){
   });
   $('r-freq').value=s.radio.freq||''; $('r-bw').value=s.radio.bw||''; $('r-sf').value=s.radio.sf||''; $('r-cr').value=s.radio.cr||''; $('r-tx').value=s.radio.tx_power||'';
   if (typeof n.path_hash_mode === 'number') $('r-phm').value = String(n.path_hash_mode);
+  loadCompanionClock();   // kost één companion-roundtrip, dus async ná de render
 }
 
 async function sendAdvert(flood){
@@ -321,6 +333,47 @@ function _hkStaleParams(){
   };
 }
 
+async function loadCompanionClock(){
+  const el = $('adm-clock');
+  if (!el) return;
+  el.innerHTML = '<div>…uitlezen…</div>';
+  let c;
+  try { c = await api('/admin/companion/time'); } catch(e) { return; }
+  const a = c.auto_sync || {};
+  const last = a.last || {};
+  const rows = [];
+  if (c.ok) {
+    const skew = c.skew_secs || 0;
+    const kleur = Math.abs(skew) > (a.threshold_secs || 30) ? '#c33' : '#28a745';
+    rows.push('<div><span class="k">afwijking:</span><b style="color:' + kleur + '">' +
+              (skew > 0 ? '+' : '') + skew + 's</b> ' +
+              (Math.abs(skew) < 2 ? '(gelijk)' : '(' + _fmtSkew(skew) + (skew > 0 ? ' vóór' : ' achter') + ')') + '</div>');
+    rows.push('<div><span class="k">companion:</span>' +
+              escapeHTML(new Date(c.companion_epoch * 1000).toLocaleString()) + '</div>');
+    rows.push('<div><span class="k">gateway:</span>' +
+              escapeHTML(new Date(c.host_epoch * 1000).toLocaleString()) + '</div>');
+  } else {
+    rows.push('<div style="color:#c33">niet uitleesbaar: ' + escapeHTML(c.error || 'onbekend') + '</div>');
+  }
+  if (a.enabled) {
+    rows.push('<div><span class="k">auto-sync:</span>elke ' +
+              Math.round((a.interval_secs || 0) / 3600) + 'u, bijstellen vanaf ' +
+              (a.threshold_secs || 0) + 's afwijking</div>');
+  } else {
+    rows.push('<div><span class="k">auto-sync:</span><span style="color:#c33">uit</span> (MESHCORE_TIME_SYNC=0)</div>');
+  }
+  if (last.checked_at) {
+    rows.push('<div><span class="k">laatste check:</span>' +
+              escapeHTML(new Date(last.checked_at * 1000).toLocaleString()) +
+              ' — ' + escapeHTML(last.last_result || '?') + '</div>');
+  }
+  if (last.synced_at) {
+    rows.push('<div><span class="k">laatst bijgesteld:</span>' +
+              escapeHTML(new Date(last.synced_at * 1000).toLocaleString()) + '</div>');
+  }
+  el.innerHTML = rows.join('');
+}
+
 // Klok-skew. last_advert wordt door de companion gestempeld met ZIJN klok,
 // terwijl wij de leeftijd berekenen tegen onze eigen tijd. Loopt de companion
 // voor, dan komen adverts 'uit de toekomst' en is geen enkele drempel zinnig.
@@ -359,6 +412,8 @@ function _renderClockWarning(clk, d){
 
 async function syncCompanionClock(){
   if (!confirm('De klok van de companion gelijkzetten aan die van de gateway?\n\n' +
+               'Dit gebeurt normaal automatisch (zie Admin → Radio → Klok); deze knop ' +
+               'forceert het nu, ook als de afwijking binnen de drempel valt.\n\n' +
                'Let op: bestaande advert-tijdstempels worden hier NIET door gecorrigeerd — ' +
                'die blijven verschoven tot elke node opnieuw geadverteerd heeft.')) return;
   let res;
@@ -370,7 +425,9 @@ async function syncCompanionClock(){
   } else {
     toast(res.error || 'klok zetten mislukt', 'err');
   }
-  loadStaleContacts();
+  // Beide panelen kunnen open staan; ververs wat er is.
+  if ($('adm-clock')) loadCompanionClock();
+  if ($('stale-result')) loadStaleContacts();
 }
 
 // Waarom vielen er contacten af? Zonder dit is "0 kandidaten" niet te
@@ -409,6 +466,7 @@ function _renderStaleDiagnostics(data){
 
 async function loadStaleContacts(){
   const el = $('stale-result');
+  if (!el) return;
   const p = _hkStaleParams();
   if (!p) return;
   el.innerHTML = '<div class="kv">…ophalen…</div>';

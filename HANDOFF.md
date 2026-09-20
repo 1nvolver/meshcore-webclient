@@ -1,6 +1,6 @@
 # Handoff — MeshCore Gateway Web Client
 
-Stand: versie 1.1.053. Deze notitie is bedoeld om het project in een nieuwe
+Stand: versie 1.1.054. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode staat in
 `github.com/1nvolver/meshcore-webclient` (branch `main`) — clone die repo,
 dan heb je alles. Voor de draaiende omgeving zie sectie 9.
@@ -274,6 +274,13 @@ vereist op enkele plekken conversie.
   direct na een opruimronde via `_refresh_contacts_cache()`. Muteer je de
   contactenlijst op de companion, ververs 'm dan expliciet — anders leest de
   UI minutenlang achterhaalde data en lijkt de actie niet gewerkt te hebben.
+- **Kloksync schrijft naar de radio.** `time_sync_loop` in `gateway.py` stelt
+  de companion-klok bij zodra de afwijking > `MESHCORE_TIME_SYNC_THRESHOLD`
+  (default 30s), bij start en elke 6 uur. Uitzetten kan met
+  `MESHCORE_TIME_SYNC=0`. `set_companion_clock()` weigert te schrijven als de
+  host-tijd vóór `HOST_CLOCK_SANITY_EPOCH` (2026-01-01) ligt — anders zou een
+  gateway zonder RTC/NTP de radio bij elke boot verkeerd zetten. Draai je op
+  hardware zonder betrouwbare tijd, zet de sync dan uit.
 - **`last_advert` komt van de klok van de COMPANION, niet van de gateway.**
   Alle leeftijdsberekeningen (housekeeping, het repeater-overzicht) zetten dat
   af tegen `time.time()` van de host. Loopt de companion voor of achter, dan
