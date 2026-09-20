@@ -136,7 +136,7 @@ async function renderReportRepeaters(){
   const q = (STATE.repeaterSearch || '').toLowerCase();
   el.innerHTML = `
     <section><h2>Repeaters &amp; Rooms (${data.count})</h2>
-      <div class="note" style="margin-bottom:8px">Bron: contactenlijst van de companion (alle nodes met type repeater of room-server). Favorieten staan bovenaan.</div>
+      <div class="note" style="margin-bottom:8px">Bron: contactenlijst van de companion (alle nodes met type repeater of room-server). Klik een kolomkop om te sorteren — favorieten blijven altijd bovenaan.</div>
       <div class="row" style="margin-bottom:8px">
         <input id="rep-search" type="text" placeholder="zoek op naam, pubkey of hash…" style="flex:1"
                value="${escapeHTML(STATE.repeaterSearch || '')}"
@@ -144,9 +144,8 @@ async function renderReportRepeaters(){
       </div>
       <table style="width:100%">
         <thead><tr>
-          <th style="width:24px"></th>
-          <th>Naam</th><th>Type</th><th>Hash</th><th>Pubkey-prefix</th>
-          <th>Laatste advert</th><th>Locatie</th><th>Path</th>
+          <th style="width:24px" title="favoriet">★</th>
+          ${_repSortTh('name','Naam')}${_repSortTh('type','Type')}${_repSortTh('hash','Hash')}${_repSortTh('pubkey','Pubkey-prefix')}${_repSortTh('last_advert','Laatste advert')}${_repSortTh('loc','Locatie')}${_repSortTh('path','Path')}
           <th>Ping</th>
         </tr></thead>
         <tbody id="rep-tbody"></tbody>
@@ -163,11 +162,92 @@ function filterRepeaterTable(q){
   renderRepeaterRows();
 }
 
+/* ============== Sorteren (v1.1.050) ==============
+   Klikbare kolomkoppen. Favorieten staan ALTIJD bovenaan, ongeacht de
+   sortering — de sortering wordt binnen de twee groepen (fav / niet-fav)
+   toegepast. Dat is bewust: de ster is een pin, geen sorteerkolom.
+   Default blijft de server-volgorde (fav, type, naam); pas bij de eerste
+   klik op een kop gaat STATE.repeaterSort meedoen. */
+
+// Kolom-key → waarde waarop gesorteerd wordt. Null/undefined sorteert altijd
+// achteraan, ongeacht de richting (anders vullen lege cellen de bovenkant).
+const REP_SORT_ACCESSORS = {
+  name:        r => (r.name || '').toLowerCase(),
+  type:        r => (r.type_label || '').toLowerCase(),
+  hash:        r => (r.hash_1b || '').toLowerCase(),
+  pubkey:      r => (r.pubkey_prefix || '').toLowerCase(),
+  last_advert: r => (typeof r.last_advert === 'number' ? r.last_advert : null),
+  loc:         r => ((typeof r.lat === 'number' && typeof r.lon === 'number' && (r.lat || r.lon)) ? r.lat : null),
+  // 'flood' (-1 / 255) is geen hop-count; sorteer 'm als hoogste waarde.
+  path:        r => {
+    const v = r.out_path_len;
+    if (v === -1 || v === 255) return 999;
+    return (typeof v === 'number') ? v : null;
+  },
+};
+
+function _repSortTh(key, label){
+  const srt = STATE.repeaterSort;
+  const active = srt && srt.key === key;
+  const arrow = active ? (srt.dir === 'asc' ? ' ▲' : ' ▼') : '';
+  const style = 'cursor:pointer;user-select:none' + (active ? ';color:#1a6fc4' : '');
+  return '<th style="' + style + '" title="sorteer op ' + label + '" ' +
+         'onclick="sortRepeaterTable(\'' + key + '\')">' + label + arrow + '</th>';
+}
+
+function sortRepeaterTable(key){
+  if (!REP_SORT_ACCESSORS[key]) return;
+  const srt = STATE.repeaterSort;
+  if (srt && srt.key === key) {
+    // zelfde kolom: asc → desc → uit (terug naar server-volgorde)
+    if (srt.dir === 'asc') STATE.repeaterSort = {key: key, dir: 'desc'};
+    else                   STATE.repeaterSort = null;
+  } else {
+    STATE.repeaterSort = {key: key, dir: 'asc'};
+  }
+  _repUpdateSortHeaders();
+  renderRepeaterRows();
+}
+
+// Alleen de <th>'s hertekenen, zodat de zoek-input z'n focus/cursor houdt.
+function _repUpdateSortHeaders(){
+  const tbody = $('rep-tbody');
+  if (!tbody) return;
+  const thead = tbody.parentElement && tbody.parentElement.querySelector('thead tr');
+  if (!thead) return;
+  const cols = [['name','Naam'],['type','Type'],['hash','Hash'],['pubkey','Pubkey-prefix'],
+                ['last_advert','Laatste advert'],['loc','Locatie'],['path','Path']];
+  thead.innerHTML = '<th style="width:24px" title="favoriet">★</th>' +
+                    cols.map(c => _repSortTh(c[0], c[1])).join('') +
+                    '<th>Ping</th>';
+}
+
+function _repSortedRows(list){
+  const srt = STATE.repeaterSort;
+  if (!srt) return list;
+  const acc = REP_SORT_ACCESSORS[srt.key];
+  if (!acc) return list;
+  const mul = (srt.dir === 'desc') ? -1 : 1;
+  // slice(): niet in-place, anders raakt de server-volgorde onherstelbaar kwijt
+  return list.slice().sort((a, b) => {
+    // Favorieten eerst — dit wint altijd van de gekozen sortering.
+    const fa = a.is_favorite ? 0 : 1, fb = b.is_favorite ? 0 : 1;
+    if (fa !== fb) return fa - fb;
+    const va = acc(a), vb = acc(b);
+    const na = (va === null || va === undefined), nb = (vb === null || vb === undefined);
+    if (na && nb) return 0;
+    if (na) return 1;          // lege waarden altijd onderaan
+    if (nb) return -1;
+    if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * mul;
+    return String(va).localeCompare(String(vb)) * mul;
+  });
+}
+
 function renderRepeaterRows(){
   const tbody = $('rep-tbody');
   if (!tbody) return;
   const q = (STATE.repeaterSearch || '').toLowerCase();
-  const list = (STATE.repeaterRows || []).filter(r => {
+  const list = _repSortedRows((STATE.repeaterRows || []).filter(r => {
     if (!q) return true;
     const name = (r.name || '').toLowerCase();
     const pk   = (r.pubkey || '').toLowerCase();
@@ -175,7 +255,7 @@ function renderRepeaterRows(){
     const h1   = (r.hash_1b || '').toLowerCase();
     const h2   = (r.hash_2b || '').toLowerCase();
     return name.includes(q) || pk.includes(q) || pref.includes(q) || h1.includes(q) || h2.includes(q);
-  });
+  }));
   const rows = list.map(r => {
     const lastAdv = r.last_advert
       ? new Date(r.last_advert * 1000).toLocaleString()
@@ -244,7 +324,8 @@ function selectRepeater(pubkey, name, typeLabel){
   STATE.selectedRepeater = {pubkey: pubkey, name: name, type_label: typeLabel};
   // Reset manage-state per nieuwe selectie
   STATE.repeaterMgmt = {logged_in: false, cli_history: [], last_status: null,
-                        last_activity_ms: 0, ttl_secs: 120};
+                        last_activity_ms: 0, ttl_secs: 120,
+                        has_saved_password: false};
   stopRepeaterCountdown();
   renderRepeaterRows();   // herteken voor de selectie-highlight
   renderDetail();
@@ -260,6 +341,7 @@ async function refreshRepeaterSession(){
     s = await api('/admin/repeaters/session?pubkey=' + encodeURIComponent(STATE.selectedRepeater.pubkey));
   } catch(e) { return; }
   STATE.repeaterMgmt.logged_in = !!s.logged_in;
+  STATE.repeaterMgmt.has_saved_password = !!s.has_saved_password;
   if (typeof s.ttl_secs === 'number') STATE.repeaterMgmt.ttl_secs = s.ttl_secs;
   if (typeof s.last_activity === 'number') {
     STATE.repeaterMgmt.last_activity_ms = s.last_activity * 1000;
@@ -348,29 +430,58 @@ async function repeaterKeepalive(){
   repeaterAction('clock', 'verlengen', null);
 }
 
-async function repeaterLogin(){
+/* Login. useSaved=true stuurt géén wachtwoord mee; de server pakt dan het
+   opgeslagen exemplaar uit de DB. Het wachtwoord komt nooit naar de browser,
+   dus de UI weet alleen óf er één ligt (has_saved_password). */
+async function repeaterLogin(useSaved){
   if (!STATE.selectedRepeater) return;
-  const pwd = $('rep-mgmt-pw').value || '';
-  if (!pwd){ toast('wachtwoord vereist', 'err'); return; }
-  $('rep-mgmt-login-status').textContent = '…inloggen…';
+  const pwEl = $('rep-mgmt-pw');
+  const rememberEl = $('rep-mgmt-remember');
+  const pwd = useSaved ? '' : ((pwEl && pwEl.value) || '');
+  if (!useSaved && !pwd){ toast('wachtwoord vereist', 'err'); return; }
+  const statusEl = $('rep-mgmt-login-status');
+  if (statusEl) statusEl.textContent = useSaved ? '…inloggen met opgeslagen wachtwoord…' : '…inloggen…';
   let res;
   try {
     res = await api('/admin/repeaters/login', {method:'POST',
-      body: JSON.stringify({pubkey: STATE.selectedRepeater.pubkey, password: pwd})});
+      body: JSON.stringify({
+        pubkey: STATE.selectedRepeater.pubkey,
+        password: pwd,
+        remember: !useSaved && !!(rememberEl && rememberEl.checked),
+      })});
   } catch(e) { return; }
   if (res.ok){
     STATE.repeaterMgmt.logged_in = true;
     STATE.repeaterMgmt.last_activity_ms = Date.now();
-    $('rep-mgmt-pw').value = '';
+    if (typeof res.has_saved_password === 'boolean') {
+      STATE.repeaterMgmt.has_saved_password = res.has_saved_password;
+    }
+    if (pwEl) pwEl.value = '';
     toast(res.message || 'ingelogd');
     renderDetail();
     startRepeaterCountdown();
+    // v1.1.050: status direct ophalen — je wilt na het verbinden meteen
+    // batterij/uptime/klok zien zonder een extra klik.
+    repeaterRequestStatus();
   } else {
     STATE.repeaterMgmt.logged_in = false;
     stopRepeaterCountdown();
-    $('rep-mgmt-login-status').textContent = res.message || res.status || 'mislukt';
     renderDetail();
+    const el2 = $('rep-mgmt-login-status');
+    if (el2) el2.textContent = res.message || res.status || 'mislukt';
   }
+}
+
+async function forgetRepeaterPassword(){
+  if (!STATE.selectedRepeater) return;
+  if (!confirm('Opgeslagen wachtwoord voor deze repeater verwijderen?')) return;
+  try {
+    await api('/admin/repeaters/forget-password', {method:'POST',
+      body: JSON.stringify({pubkey: STATE.selectedRepeater.pubkey})});
+  } catch(e) { return; }
+  STATE.repeaterMgmt.has_saved_password = false;
+  toast('opgeslagen wachtwoord verwijderd');
+  renderDetail();
 }
 
 async function repeaterLogout(){
@@ -407,36 +518,95 @@ async function repeaterRequestStatus(){
   renderDetail();
 }
 
+/* ============== CLI met auto-retry (v1.1.050) ==============
+   Repeater-commando's gaan over de mesh: een uitblijvend antwoord is vaker
+   een gemiste pakket dan een echte fout. Daarom 3 pogingen (origineel +
+   retry 1 + retry 2) met een korte pauze ertussen.
+
+   NIET geretried:
+     - not_logged_in  → sessie verlopen; opnieuw sturen helpt niet en kost
+                        alleen USB-traffic. UI valt terug op het login-form.
+     - HTTP-fouten uit api() (4xx/5xx) → dat is een serverfout, geen RF-probleem.
+   Wél geretried: timeout en andere 'ok:false'-statussen van de mesh-kant.
+
+   De history-regel wordt live bijgewerkt zodat de user ziet wat er gebeurt:
+   '…wachten…' → 'retry 1/2…' → 'retry 2/2…' → uiteindelijke respons of
+   'failed na 3 pogingen'. */
+const REP_CMD_MAX_ATTEMPTS = 3;      // origineel + 2 retries
+const REP_CMD_RETRY_DELAY_MS = 1500; // ademruimte voor de mesh
+
+function _repSleep(ms){ return new Promise(res => setTimeout(res, ms)); }
+
+// Commando's die je niet per ongeluk twee keer wilt uitvoeren. Een timeout
+// betekent "geen antwoord", niet "niet aangekomen" — de repeater kan 'm wel
+// degelijk hebben uitgevoerd. Voor 'clock'/'get …'/'advert' is dubbel
+// onschadelijk, voor een reboot niet.
+const REP_CMD_NO_RETRY = /^\s*reboot\b/i;
+
+async function _repeaterCmdWithRetry(cmd, hist){
+  // hist = het history-object dat al in cli_history zit; wordt in-place
+  // bijgewerkt zodat renderDetail() de voortgang toont.
+  const maxAttempts = REP_CMD_NO_RETRY.test(cmd) ? 1 : REP_CMD_MAX_ATTEMPTS;
+  let last = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++){
+    if (attempt > 1) {
+      hist.response = 'retry ' + (attempt - 1) + '/' + (maxAttempts - 1) + '…';
+      hist.ok = null;
+      renderDetail();
+      await _repSleep(REP_CMD_RETRY_DELAY_MS);
+    }
+    let res;
+    try {
+      res = await api('/admin/repeaters/cmd', {method:'POST',
+        body: JSON.stringify({pubkey: STATE.selectedRepeater.pubkey, cmd: cmd})});
+    } catch(e) {
+      // HTTP-fout: niet retryen, dit is geen RF-probleem.
+      return {ok: false, status: 'http_error', error: '(fout)', attempts: attempt, fatal: true};
+    }
+    if (res.ok) return Object.assign({}, res, {attempts: attempt});
+    if (res.status === 'not_logged_in') {
+      return Object.assign({}, res, {attempts: attempt, fatal: true});
+    }
+    last = res;
+  }
+  return Object.assign({}, last || {ok:false, status:'error'},
+                       {attempts: maxAttempts, exhausted: maxAttempts > 1});
+}
+
+// Gedeelde afhandeling van het resultaat voor zowel de actie-knoppen als de
+// vrije CLI-tab — één plek die de history-regel en de sessie-state bijwerkt.
+function _repeaterCmdFinish(hist, res){
+  if (res.ok) {
+    hist.response = res.response || '(leeg / accepted)';
+    if (res.attempts > 1) hist.response += '\n(gelukt na ' + res.attempts + ' pogingen)';
+    hist.ok = true;
+    _bumpRepeaterActivity();
+  } else {
+    const reason = res.error || res.message || res.status || 'fout';
+    hist.response = res.exhausted
+      ? ('failed na ' + res.attempts + ' pogingen — ' + reason)
+      : reason;
+    hist.ok = false;
+    if (res.status === 'not_logged_in') {
+      STATE.repeaterMgmt.logged_in = false;
+      stopRepeaterCountdown();
+      toast('sessie verlopen — opnieuw inloggen', 'err');
+    } else if (res.exhausted) {
+      toast('commando mislukt na ' + res.attempts + ' pogingen', 'err');
+    }
+  }
+  renderDetail();
+}
+
 async function repeaterAction(cmd, label, confirmMsg){
   if (!STATE.selectedRepeater) return;
   if (confirmMsg && !confirm(confirmMsg)) return;
   // Voer 'm uit alsof het een CLI-commando is, zodat de respons in dezelfde
   // history-lijst terechtkomt en je achteraf kunt zien wat er teruggekomen is.
-  STATE.repeaterMgmt.cli_history.push({cmd: '['+label+'] ' + cmd, response: '…wachten…', ok: null});
+  const h = {cmd: '['+label+'] ' + cmd, response: '…wachten…', ok: null};
+  STATE.repeaterMgmt.cli_history.push(h);
   renderDetail();
-  let res;
-  try {
-    res = await api('/admin/repeaters/cmd', {method:'POST',
-      body: JSON.stringify({pubkey: STATE.selectedRepeater.pubkey, cmd: cmd})});
-  } catch(e) {
-    const h = STATE.repeaterMgmt.cli_history[STATE.repeaterMgmt.cli_history.length-1];
-    h.response = '(fout)'; h.ok = false;
-    renderDetail(); return;
-  }
-  const h = STATE.repeaterMgmt.cli_history[STATE.repeaterMgmt.cli_history.length-1];
-  if (res.ok) {
-    h.response = res.response || '(leeg / accepted)';
-    h.ok = true;
-    _bumpRepeaterActivity();
-  } else {
-    h.response = res.error || res.message || res.status || 'fout';
-    h.ok = false;
-    if (res.status === 'not_logged_in') {
-      STATE.repeaterMgmt.logged_in = false;
-      stopRepeaterCountdown();
-    }
-  }
-  renderDetail();
+  _repeaterCmdFinish(h, await _repeaterCmdWithRetry(cmd, h));
 }
 
 function repeaterSyncTime(){
@@ -460,31 +630,10 @@ async function repeaterRunCli(){
   const cmd = (inp.value || '').trim();
   if (!cmd) return;
   inp.value = '';
-  STATE.repeaterMgmt.cli_history.push({cmd: cmd, response: '…wachten…', ok: null});
+  const h = {cmd: cmd, response: '…wachten…', ok: null};
+  STATE.repeaterMgmt.cli_history.push(h);
   renderDetail();
-  let res;
-  try {
-    res = await api('/admin/repeaters/cmd', {method:'POST',
-      body: JSON.stringify({pubkey: STATE.selectedRepeater.pubkey, cmd: cmd})});
-  } catch(e) {
-    const h = STATE.repeaterMgmt.cli_history[STATE.repeaterMgmt.cli_history.length-1];
-    h.response = '(fout)'; h.ok = false;
-    renderDetail(); return;
-  }
-  const h = STATE.repeaterMgmt.cli_history[STATE.repeaterMgmt.cli_history.length-1];
-  if (res.ok) {
-    h.response = res.response || '(leeg)';
-    h.ok = true;
-    _bumpRepeaterActivity();
-  } else {
-    h.response = res.error || res.message || res.status || 'fout';
-    h.ok = false;
-    if (res.status === 'not_logged_in') {
-      STATE.repeaterMgmt.logged_in = false;
-      stopRepeaterCountdown();
-    }
-  }
-  renderDetail();
+  _repeaterCmdFinish(h, await _repeaterCmdWithRetry(cmd, h));
 }
 
 function renderRepeaterManage(){
@@ -506,10 +655,31 @@ function renderRepeaterManage(){
   // 2) Login/Logout-blok bovenaan
   let loginBlock;
   if (!mgmt.logged_in) {
+    const saved = !!mgmt.has_saved_password;
+    // Met een opgeslagen wachtwoord is de primaire actie één klik; het
+    // handmatige veld blijft eronder staan om een gewijzigd wachtwoord
+    // te kunnen invoeren (en meteen te overschrijven).
+    const savedRow = saved
+      ? '<div class="row" style="align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">' +
+          '<button onclick="repeaterLogin(true)">verbind (opgeslagen wachtwoord)</button>' +
+          '<button class="sec small" onclick="forgetRepeaterPassword()" title="verwijder het opgeslagen wachtwoord uit de database">vergeet</button>' +
+        '</div>'
+      : '';
+    const pwPlaceholder = saved ? 'ander/nieuw wachtwoord' : 'admin-wachtwoord';
     loginBlock =
       '<div class="detail-section"><h3>Login</h3>' +
-        '<div class="row"><input id="rep-mgmt-pw" type="password" placeholder="admin-wachtwoord" style="flex:1" autocomplete="off">' +
-        '<button onclick="repeaterLogin()">manage</button></div>' +
+        savedRow +
+        '<div class="row"><input id="rep-mgmt-pw" type="password" placeholder="' + pwPlaceholder + '" style="flex:1" autocomplete="off" ' +
+          'onkeydown="if(event.key===\'Enter\'){event.preventDefault();repeaterLogin(false);}">' +
+        '<button onclick="repeaterLogin(false)">manage</button></div>' +
+        '<label class="note" style="display:flex;align-items:center;gap:6px;margin-top:6px;cursor:pointer">' +
+          '<input type="checkbox" id="rep-mgmt-remember"' + (saved ? ' checked' : '') + '> ' +
+          'onthoud dit wachtwoord' +
+        '</label>' +
+        '<div class="note" style="margin-top:4px;color:#888">' +
+          'Opgeslagen wachtwoorden staan <b>onversleuteld</b> in de database en gelden voor alle admins. ' +
+          'Behandel de DB en z\'n backups navenant.' +
+        '</div>' +
         '<div id="rep-mgmt-login-status" class="note" style="margin-top:6px;color:#c33"></div>' +
       '</div>';
   } else {

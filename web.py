@@ -43,7 +43,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 #   x = major (handmatig te bepalen)
 #   y = minor (handmatig te bepalen)
 #   z = dot-versie, bumpt bij elke door de gebruiker gevraagde wijziging
-APP_VERSION = "1.1.049"
+APP_VERSION = "1.1.050"
 
 # Module-logger; uvicorn pikt deze automatisch op via root-handlers (stdout,
 # systemd-journal, docker logs). Geen extra config nodig.
@@ -1180,9 +1180,27 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
 
     @app.post("/admin/repeaters/login")
     async def admin_repeaters_login(request: Request, payload: dict):
+        """Login op een repeater.
+
+        Wachtwoord-bronnen, in volgorde:
+          1. `password` uit de payload (de user typt 'm);
+          2. het opgeslagen wachtwoord uit de DB, als de payload er geen heeft.
+
+        Met `remember: true` wordt een geslaagd wachtwoord opgeslagen. Het
+        wachtwoord gaat nooit terug naar de browser — alleen de vlag of er een
+        opgeslagen is. Zie db.RepeaterCredential voor de opslag-afweging.
+        """
         _admin_or_403(request)
         pubkey = (payload.get("pubkey") or "").strip().lower()
         password = payload.get("password") or ""
+        remember = bool(payload.get("remember"))
+        used_saved = False
+        if not password:
+            saved = await db.get_repeater_password(pubkey)
+            if saved:
+                password, used_saved = saved, True
+            else:
+                raise HTTPException(400, "wachtwoord vereist (geen opgeslagen wachtwoord)")
         contact, pk_hex = _get_repeater_contact(pubkey)
         if contact is None:
             raise HTTPException(404, "contact onbekend op companion")
@@ -1195,6 +1213,7 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             raise HTTPException(500, f"login faalde: {e}")
         if ev is None:
             return {"ok": False, "status": "no_response",
+                    "used_saved": used_saved,
                     "message": "geen antwoord van repeater (timeout)"}
         ev_type = getattr(ev, "type", None)
         ev_type_str = getattr(ev_type, "value", str(ev_type))
@@ -1207,12 +1226,29 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
                 "permissions":   payload_data.get("permissions"),
                 "is_admin":      payload_data.get("is_admin"),
             }
+            if remember and not used_saved:
+                sess = _session_from_request(request) or {}
+                await db.set_repeater_password(pk_hex, password, sess.get("username") or "")
             return {"ok": True, "status": "logged_in",
                     "is_admin": payload_data.get("is_admin"),
                     "permissions": payload_data.get("permissions"),
-                    "message": "ingelogd"}
+                    "used_saved": used_saved,
+                    "has_saved_password": await db.has_repeater_password(pk_hex),
+                    "message": "ingelogd (opgeslagen wachtwoord)" if used_saved else "ingelogd"}
+        # Mislukt. Een opgeslagen wachtwoord dat geweigerd wordt is bijna altijd
+        # achterhaald (repeater-pw gewijzigd) — melden, maar niet stilzwijgend
+        # wissen: dat zou ook bij een firmware-hik de opslag opruimen.
         return {"ok": False, "status": ev_type_str or "login_failed",
-                "message": "login geweigerd (verkeerd wachtwoord?)"}
+                "used_saved": used_saved,
+                "message": ("opgeslagen wachtwoord geweigerd — is het op de repeater gewijzigd?"
+                            if used_saved else "login geweigerd (verkeerd wachtwoord?)")}
+
+    @app.post("/admin/repeaters/forget-password")
+    async def admin_repeaters_forget_password(request: Request, payload: dict):
+        _admin_or_403(request)
+        pubkey = (payload.get("pubkey") or "").strip().lower()
+        removed = await db.forget_repeater_password(pubkey)
+        return {"ok": True, "removed": removed}
 
     @app.post("/admin/repeaters/logout")
     async def admin_repeaters_logout(request: Request, payload: dict):
@@ -1242,6 +1278,8 @@ def setup_web(*, mc, send_channel: SendChannelFn, send_dm,
             "last_activity": s.get("last_activity"),
             "is_admin": s.get("is_admin"),
             "ttl_secs": _REPEATER_SESSION_TTL_SECS,
+            # Alleen de vlag — het wachtwoord zelf verlaat de server nooit.
+            "has_saved_password": await db.has_repeater_password(pubkey),
         }
 
     async def _send_cli_and_wait(contact, pk_hex: str, cmd: str, timeout: float = 12.0):

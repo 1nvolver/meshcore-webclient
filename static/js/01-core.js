@@ -20,6 +20,8 @@ let STATE = {
   // Repeater-rapport: laatst-gefetchte rows + zoektekst (lowercase)
   repeaterRows: [],
   repeaterSearch: '',
+  // {key, dir} of null = server-volgorde (fav, type, naam). Zie 05-reports.js.
+  repeaterSort: null,
   selectedRepeater: null,    // {pubkey, name, type_label} of null
   repeaterMgmt: {            // UI-state voor het manage-paneel
     logged_in: false,

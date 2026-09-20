@@ -1,6 +1,6 @@
 # Handoff — MeshCore Gateway Web Client
 
-Stand: versie 1.1.049. Deze notitie is bedoeld om het project in een nieuwe
+Stand: versie 1.1.050. Deze notitie is bedoeld om het project in een nieuwe
 AI-/dev-omgeving te kunnen voortzetten. De broncode staat in
 `github.com/1nvolver/meshcore-webclient` (branch `main`) — clone die repo,
 dan heb je alles. Voor de draaiende omgeving zie sectie 9.
@@ -106,10 +106,10 @@ SQLAlchemy async + aiosqlite, uvicorn. Geen build-step; één venv.
 
 ---
 
-## 4. DB-schema (`SCHEMA_VERSION = "14"`)
+## 4. DB-schema (`SCHEMA_VERSION = "15"`)
 
 Modellen in `db.py`: `Message`, `Meta`, `Channel`, `Hashtag` (deprecated sinds
-v4), `User`, `UserContact`, `Bot`, `UserFavoriteRepeater`.
+v4), `User`, `UserContact`, `Bot`, `UserFavoriteRepeater`, `RepeaterCredential`.
 
 Migratiegeschiedenis: v2 Channel · v3 Hashtag (verlaten) · v4 `Channel.kind` ·
 v5 User · v6 `User.must_change_password` · v7 `Channel.scope` · v8 Message
@@ -119,7 +119,9 @@ v11 Bot · v12 UserFavoriteRepeater (per-user favoriete repeaters/rooms;
 composite-key `username + pubkey`) · **v13 `User.callsign`** (VARCHAR(64),
 default `''`, vrij Unicode incl. emoji) · **v14 `Message.parent_id`**
 (Integer, nullable, indexed — threading; gezet bij outgoing als user Reply
-heeft geklikt).
+heeft geklikt) · **v15 `RepeaterCredential`** (nieuwe tabel
+`repeater_credentials`: `pubkey` PK + `password` + `updated_by` + `updated_at`;
+puur additief, `create_all` maakt 'm aan, geen ALTER).
 
 `Message.peer` = 12-char pubkey-prefix. `UserContact.pubkey` en
 `UserFavoriteRepeater.pubkey` = volledige 64-char hex. Die inconsistentie
@@ -189,6 +191,23 @@ vereist op enkele plekken conversie.
   replies; klik filtert de chat naar root + descendants. Globale toggle in
   avatar-menu (localStorage). Reply-banner boven chat-input toont wat je
   reply't, met ×-annuleer.
+- **Repeater-wachtwoord onthouden** (v1.1.050): checkbox bij het login-form
+  slaat het admin-wachtwoord op in `repeater_credentials`. Eén rij per
+  repeater, gedeeld door alle admins. Bij een volgende login verschijnt
+  "verbind (opgeslagen wachtwoord)" + een "vergeet"-knop. Het wachtwoord
+  verlaat de server nooit — de API geeft alleen `has_saved_password`.
+  **Platte tekst in de DB**, zie caveats.
+- **Sorteerbaar repeater-overzicht** (v1.1.050): klikbare kolomkoppen
+  (naam/type/hash/pubkey/advert/locatie/path), cyclus asc → desc → uit.
+  Favorieten staan altijd bovenaan, ongeacht de sortering; lege waarden
+  zakken altijd naar onderen. Alleen de `<th>`-rij wordt hertekend zodat de
+  zoek-input focus houdt.
+- **Status direct na verbinden** (v1.1.050): een geslaagde repeater-login
+  triggert meteen `repeaterRequestStatus()`.
+- **Auto-retry op repeater-commando's** (v1.1.050): `_repeaterCmdWithRetry()`
+  doet 3 pogingen met 1500ms pauze; de CLI-history toont `retry 1/2…`,
+  `retry 2/2…` en uiteindelijk de respons of `failed na 3 pogingen`.
+  Gedeeld door de actie-knoppen en de vrije CLI-tab.
 - **Repeaters-paneel naar Admin-tak** (v1.1.030): zat eerder onder Rapportages,
   is nu admin-only (zowel UI-hide als backend route-check). Niet-admins zien
   alleen Rapportages → Overzicht.
@@ -320,6 +339,26 @@ vereist op enkele plekken conversie.
 - **Rollback is beperkt door forward-only migraties**: terug naar een oudere
   image-tag werkt alleen als het DB-schema niet vooruit is gemigreerd. Vandaar
   de backup-stap in de update-procedure.
+- **Opgeslagen repeater-wachtwoorden staan als PLATTE TEKST in de DB**
+  (tabel `repeater_credentials`, sinds v1.1.050). Dat kan niet anders met een
+  hash — het wachtwoord moet letterlijk naar de repeater — maar het betekent
+  wel: wie `meshcore.db` of een backup ervan heeft, heeft de
+  repeater-wachtwoorden. De rij geldt voor álle admins, niet per user.
+  Wil je 't ooit versleutelen: `db.get_repeater_password` en
+  `db.set_repeater_password` zijn de enige twee plekken die de waarde
+  aanraken — key uit een env-var, en klaar. Let wel: dan zijn bestaande
+  opgeslagen wachtwoorden onleesbaar en moet je ze opnieuw invoeren.
+- **Een geweigerd opgeslagen wachtwoord wordt niet automatisch gewist.**
+  Bewust: een firmware-hik of een `no_response` zou anders je opslag
+  opruimen. De UI meldt het en je overschrijft 'm handmatig.
+- **De retry-logica kan een commando dubbel uitvoeren.** Een timeout betekent
+  "geen antwoord", niet "niet aangekomen": de repeater kan 'm wél hebben
+  uitgevoerd terwijl de respons onderweg sneuvelde. Voor `clock`, `get …` en
+  `advert` is dubbel onschadelijk. `reboot` is daarom uitgezonderd van de
+  retry (`REP_CMD_NO_RETRY` in `05-reports.js`). Voeg daar commando's aan toe
+  als er later niet-idempotente wrappers bijkomen — de fase-B-forms
+  (`set radio`, `set name`, position) zijn overschrijvend en dus wél veilig
+  om te herhalen, maar denk er per geval over na.
 - Geen automated tests.
 
 ---

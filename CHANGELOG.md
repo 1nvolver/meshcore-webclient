@@ -2,7 +2,7 @@
 
 Per-versie wijzigingen, chronologisch (nieuwste onderaan).
 
-- **Huidige versie:** v1.1.049 (zie laatste sectie).
+- **Huidige versie:** v1.1.050 (zie laatste sectie).
 - **Voor architectuur, DB-schema, voltooide features en backlog:** zie `HANDOFF.md`.
 - **Voor end-user setup / deploy / update-procedure:** zie `README.md`.
 
@@ -749,6 +749,82 @@ naar `main`; `main` is de default branch waar CI op triggert.
 **Lint**: Python schoon, JS schoon, beide compose-bestanden valide YAML,
 workflow-YAML valide. Image is nog niet lokaal gebouwd (geen Docker in de
 dev-omgeving) — de eerste echte build is de CI-run.
+
+### v1.1.050 — Repeater-management: opgeslagen wachtwoord, sorteren, auto-status, retry
+
+Vier user-wensen in één bump, allemaal rond het repeater-paneel.
+
+**1. Repeater-wachtwoord opslaan (SCHEMA_VERSION 14 → 15)**
+
+Nieuwe tabel `repeater_credentials` (`db.py`): `pubkey` PK, `password`,
+`updated_by`, `updated_at`. Additieve migratie — `create_all` maakt 'm aan,
+geen ALTER nodig.
+
+Drie bewuste keuzes, door de eigenaar gemaakt:
+
+- **Platte tekst.** Het wachtwoord moet letterlijk naar de repeater, dus een
+  hash kan niet. Encryptie met een env-key was het alternatief; afgewezen als
+  te veel key-beheer voor een LAN-only gateway. Consequentie staat in de
+  UI *en* in HANDOFF: wie de DB heeft, heeft de repeater-wachtwoorden.
+- **Eén rij per repeater, gedeeld door alle admins** — niet per user, zoals
+  de favorieten. In de praktijk is er één wachtwoord per node. `updated_by`
+  houdt bij wie 'm gezet heeft.
+- **Opt-in via checkbox** bij het login-form, niet automatisch bij elke login.
+
+`web.py`: `/admin/repeaters/login` accepteert nu `remember`; een lege
+`password` laat de server het opgeslagen exemplaar pakken (`used_saved` in de
+respons). Nieuw: `POST /admin/repeaters/forget-password`.
+`/admin/repeaters/session` geeft `has_saved_password` mee. **Het wachtwoord
+zelf gaat nooit terug naar de browser** — alleen die vlag.
+
+Een geweigerd opgeslagen wachtwoord wordt *niet* stilzwijgend gewist (dat zou
+bij een firmware-hik de opslag opruimen); de UI meldt "is het op de repeater
+gewijzigd?" en je kunt handmatig een nieuw wachtwoord invoeren, dat de oude
+overschrijft.
+
+**2. Sorteerbare kolommen in het repeater-overzicht**
+
+Klikbare koppen voor naam, type, hash, pubkey-prefix, laatste advert, locatie
+en path. Cyclus per kolom: asc → desc → uit (terug naar de server-volgorde).
+`STATE.repeaterSort = {key, dir} | null`.
+
+**Favorieten blijven altijd bovenaan**, ongeacht de sortering — de sortering
+werkt binnen de twee groepen. Bewust: de ster is een pin, geen sorteerkolom.
+Lege waarden (geen locatie, geen advert-tijd) zakken altijd naar onderen, ook
+bij desc — anders vult een kolom met gaten z'n bovenkant met niets.
+`flood` (-1/255) sorteert als hoogste hop-count.
+
+Alleen de `<th>`-rij wordt hertekend bij een sorteerklik, zodat de zoek-input
+z'n focus en cursorpositie houdt.
+
+**3. Status direct opvragen na verbinden**
+
+`repeaterLogin()` roept bij succes meteen `repeaterRequestStatus()` aan.
+Je ziet batterij/uptime/klok nu zonder extra klik.
+
+**4. Auto-retry op gefaalde repeater-commando's**
+
+Nieuwe helper `_repeaterCmdWithRetry()` + `_repeaterCmdFinish()`, gedeeld door
+de actie-knoppen (`repeaterAction`) en de vrije CLI-tab (`repeaterRunCli`) —
+die hadden tot nu toe gedupliceerde afhandeling.
+
+3 pogingen (origineel + 2 retries), 1500ms ertussen. De history-regel loopt
+live mee: `…wachten…` → `retry 1/2…` → `retry 2/2…` → respons, of
+`failed na 3 pogingen — <reden>`. Bij succes na een retry komt er
+`(gelukt na N pogingen)` onder de respons.
+
+**Niet** geretried:
+- `not_logged_in` — de sessie is verlopen; opnieuw sturen kost alleen
+  USB-traffic. UI valt terug op het login-form + toast.
+- HTTP-fouten uit `api()` (4xx/5xx) — dat is een serverfout, geen RF-probleem.
+- **`reboot`** (`REP_CMD_NO_RETRY`). Een timeout betekent "geen antwoord",
+  niet "niet aangekomen"; een blind herhaalde reboot is het enige commando
+  in de huidige set waar dat schadelijk kan zijn.
+
+Wél geretried: timeout en andere mesh-zijdige `ok:false`-statussen.
+
+**Lint**: Python schoon, alle 8 JS-files schoon, render-smoke groen. Niet
+end-to-end getest — geen radio in de dev-omgeving.
 
 ---
 

@@ -36,7 +36,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 #      Bestaande user_contacts tabel wordt gedropt en opnieuw aangemaakt.
 # v11: + Bot tabel (admin-defined channel-bots met variable-templates)
 # v12: + UserFavoriteRepeater tabel (per-user favoriete repeaters → top van lijst)
-SCHEMA_VERSION = "14"
+SCHEMA_VERSION = "15"
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +199,36 @@ class UserFavoriteRepeater(Base):
     username:   Mapped[str] = mapped_column(String(64), primary_key=True)
     pubkey:     Mapped[str] = mapped_column(String(64), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+
+
+class RepeaterCredential(Base):
+    """Opgeslagen admin-wachtwoord van een repeater/room, zodat je niet bij
+    elke login opnieuw hoeft te typen (v1.1.050).
+
+    LET OP — dit is bewust een *omkeerbaar* geheim, geen hash: het wachtwoord
+    moet letterlijk naar de repeater gestuurd worden, dus het staat als platte
+    tekst in de DB. Dat is een expliciete keuze van de eigenaar voor een
+    LAN-only gateway. Consequenties:
+
+      - Wie `meshcore.db` (of een backup ervan) in handen krijgt, heeft de
+        repeater-wachtwoorden. Behandel de DB en z'n backups navenant.
+      - Eén rij per repeater, gedeeld door alle admins — niet per user. Dat is
+        zo gekozen omdat er in de praktijk één repeater-wachtwoord per node is.
+        `updated_by` houdt bij wie 'm als laatste gezet heeft.
+      - Het wachtwoord wordt NOOIT terug naar de browser gestuurd; de API
+        vertelt alleen óf er één opgeslagen is.
+
+    Wil je dit ooit at-rest versleutelen: zet een key in een env-var, en
+    encrypt/decrypt in `get_repeater_password` / `set_repeater_password` —
+    dat zijn de enige twee plekken die de waarde aanraken.
+    """
+
+    __tablename__ = "repeater_credentials"
+
+    pubkey:     Mapped[str] = mapped_column(String(64), primary_key=True)
+    password:   Mapped[str] = mapped_column(Text, default="")
+    updated_by: Mapped[str] = mapped_column(String(64), default="")
+    updated_at: Mapped[datetime] = mapped_column(default=_utcnow)
 
 
 class User(Base):
@@ -1193,6 +1223,58 @@ async def remove_fav_repeater(username: str, pubkey: str) -> bool:
         await s.delete(row)
         await s.commit()
     return True
+
+
+# --- Repeater-credentials (v15) -----------------------------------------
+# Zie de docstring van RepeaterCredential: platte tekst, gedeeld per repeater.
+# Deze drie functies zijn de enige plek die de wachtwoord-waarde aanraakt.
+
+async def get_repeater_password(pubkey: str) -> Optional[str]:
+    """Opgeslagen wachtwoord, of None als er geen is."""
+    pk = _norm_pubkey(pubkey)
+    Session = _require_session()
+    async with Session() as s:
+        row = await s.get(RepeaterCredential, pk)
+        if row is None or not row.password:
+            return None
+        return row.password
+
+
+async def set_repeater_password(pubkey: str, password: str, username: str = "") -> bool:
+    """Sla het wachtwoord op (upsert). Lege string = niets opslaan; gebruik
+    daarvoor forget_repeater_password()."""
+    if not password:
+        return False
+    pk = _norm_pubkey(pubkey)
+    Session = _require_session()
+    async with Session() as s:
+        row = await s.get(RepeaterCredential, pk)
+        if row is None:
+            s.add(RepeaterCredential(pubkey=pk, password=password,
+                                     updated_by=username or "", updated_at=_utcnow()))
+        else:
+            row.password = password
+            row.updated_by = username or ""
+            row.updated_at = _utcnow()
+        await s.commit()
+    return True
+
+
+async def forget_repeater_password(pubkey: str) -> bool:
+    """Verwijder het opgeslagen wachtwoord. True als er iets weg is."""
+    pk = _norm_pubkey(pubkey)
+    Session = _require_session()
+    async with Session() as s:
+        row = await s.get(RepeaterCredential, pk)
+        if row is None:
+            return False
+        await s.delete(row)
+        await s.commit()
+    return True
+
+
+async def has_repeater_password(pubkey: str) -> bool:
+    return (await get_repeater_password(pubkey)) is not None
 
 
 async def set_user_role(username: str, role: str) -> bool:
